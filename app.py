@@ -319,7 +319,7 @@ def main():
     with st.sidebar:
         st.title("🛡️ Secure Portal")
         st.markdown("**Strategic Contract Assessment**")
-        st.caption(f"v{APP_VERSION} | TLS 1.3")
+        st.caption(f"v{APP_VERSION}") # Removed TLS 1.3
         st.markdown("---")
 
         if not st.session_state.license_verified:
