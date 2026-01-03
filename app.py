@@ -10,15 +10,16 @@ import time
 import re
 import pandas as pd
 import os
-import requests  # Required for Gumroad & Discord
+import requests
+import ast
 
 # ==========================================
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.2 (Stable)"
 
-# 1. API KEY (Gemini)
+# 1. API KEY
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
@@ -26,80 +27,67 @@ try:
 except:
     API_KEY = "MISSING_KEY"
 
-# 2. DISCORD WEBHOOK (The Watchtower)
-# Add this to Render Environment Variables as 'DISCORD_WEBHOOK_URL'
+# 2. WEBHOOK & GUMROAD
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
-
-# 3. GUMROAD CONFIGURATION
-# Replace this with your actual ID from the Gumroad "Content" tab
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🛠️ HELPER FUNCTIONS
+# 🛠️ HELPER FUNCTIONS (UPDATED PARSER)
 # ==========================================
 
+def extract_json(text):
+    """
+    Robust JSON Extractor v2:
+    Handles Markdown, conversational filler, and Python-style dicts.
+    """
+    try:
+        # 1. Remove Markdown code blocks (```json ... ```)
+        text = re.sub(r"```[a-zA-Z]*", "", text)
+        text = text.replace("```", "")
+        
+        # 2. Find the first '{' and the last '}'
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        
+        if start == -1 or end == 0:
+            return None
+
+        json_str = text[start:end]
+
+        # 3. Attempt 1: Standard JSON parsing
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # 4. Attempt 2: Python Literal Eval (Handles single quotes issues)
+            try:
+                return ast.literal_eval(json_str)
+            except:
+                return None
+    except:
+        return None
+
 def check_gumroad_license(key):
-    """Verifies license validity, cancellation status, and refunds."""
     url = "https://api.gumroad.com/v2/licenses/verify"
-    params = {
-        "product_id": GUMROAD_PRODUCT_ID,
-        "license_key": key,
-        "increment_uses_count": "false"
-    }
-    
+    params = {"product_id": GUMROAD_PRODUCT_ID, "license_key": key, "increment_uses_count": "false"}
     try:
         response = requests.post(url, data=params)
         data = response.json()
-        
-        if not data.get("success"):
-            return False, "❌ Invalid License Key."
-            
+        if not data.get("success"): return False, "❌ Invalid License Key."
         purchase = data.get("purchase", {})
-        
-        if purchase.get("refunded") or purchase.get("chargebacked"):
-             return False, "⛔ Access denied: Purchase refunded."
-
-        if purchase.get("subscription_cancelled_at"):
-             return False, "⚠️ Subscription Cancelled. Reactivate to access."
-             
-        if purchase.get("subscription_failed_at"):
-             return False, "⚠️ Payment Failed. Update billing info."
-
+        if purchase.get("refunded") or purchase.get("chargebacked"): return False, "⛔ Access denied: Refunded."
+        if purchase.get("subscription_cancelled_at"): return False, "⚠️ Subscription Cancelled."
+        if purchase.get("subscription_failed_at"): return False, "⚠️ Payment Failed."
         return True, "✅ Access Granted"
-        
-    except Exception as e:
-        return False, f"Connection Error: {str(e)}"
+    except Exception as e: return False, f"Connection Error: {str(e)}"
 
 def log_usage(license_key, filename, file_size):
-    """Sends a ping to Discord when a contract is analyzed."""
     if not DISCORD_WEBHOOK: return
-    
     masked_key = f"****{license_key[-4:]}" if len(license_key) > 4 else "Unknown"
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     size_mb = round(file_size / (1024 * 1024), 2)
-    
-    message = {
-        "content": f"🚨 **Analysis Run**\n"
-                   f"👤 **User:** `{masked_key}`\n"
-                   f"📄 **File:** `{filename}` ({size_mb} MB)\n"
-                   f"⏰ **Time:** {timestamp}"
-    }
-    try:
-        requests.post(DISCORD_WEBHOOK, json=message)
-    except:
-        pass
-
-def extract_json(text):
-    """Surgical extractor to find JSON within AI chatter."""
-    text = text.replace("```json", "").replace("```", "")
-    text = re.sub(r'[\\x00-\\x1f\\x7f]', '', text) 
-    try:
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(text[start:end])
-        return None
-    except: return None
+    message = {"content": f"🚨 **Analysis Run**\n👤 **User:** `{masked_key}`\nwm **File:** `{filename}` ({size_mb} MB)\n⏰ **Time:** {timestamp}"}
+    try: requests.post(DISCORD_WEBHOOK, json=message)
+    except: pass
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -110,17 +98,12 @@ def safe_get(data, path, default="N/A"):
                 else: return default
             elif isinstance(current, dict):
                 current = current.get(key, default)
-            else:
-                return default
+            else: return default
         return current
-    except:
-        return default
+    except: return default
 
 def clean_text(text):
     if not isinstance(text, str): return str(text)
-    replacements = {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."}
-    for char, replacement in replacements.items():
-        text = text.replace(char, replacement)
     return text.encode('latin-1', 'ignore').decode('latin-1')
 
 # ==========================================
@@ -137,7 +120,7 @@ class StrategicReport(FPDF):
         self.set_y(-15)
         self.set_font('Helvetica', 'I', 8)
         self.set_text_color(150, 150, 150)
-        self.cell(0, 10, f'Generated by Strategic Contract Assessment AI - Page {self.page_no()}', 0, 0, 'C')
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
 def create_pdf(data):
     pdf = StrategicReport()
@@ -210,17 +193,11 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 AI ENGINE (PROMPTS)
+# 🧠 AI ENGINE
 # ==========================================
 BASE_INSTRUCTION = """
-You are Contract Engine, a Senior Contract Analyst for an Oil & Gas Major.
-Analyze the contract text and return ONLY a raw JSON object.
-
-EXTRACTION RULES:
-1. Commercials: If Schedule of Rates/Unit Rate, value must be "Schedule of Rates".
-2. Duration: Extract exact dates and extension options (e.g. "3 Years (Jan 2022 - Dec 2024) + 1 Year Option").
-3. Vendor Intel: Use internal knowledge to assess Counterparty (Sanctions, Financials).
-4. Deep Dive: Provide detailed markdown report.
+You are Contract Engine. Analyze the contract text and return ONLY a raw JSON object.
+Do not add any markdown formatting like ```json or ```. Just the pure JSON string.
 
 JSON SCHEMA:
 {
@@ -238,16 +215,11 @@ JSON SCHEMA:
       { "area": "Termination", "risk": "High/Med/Low", "finding": "string" },
       { "area": "Indemnity", "risk": "High/Med/Low", "finding": "string" }
   ],
-  "deepDive": "Long-form Markdown string with headers (##) and bullets."
+  "deepDive": "Long-form Markdown string."
 }
 """
 
-COACH_INSTRUCTION = """
-You are a Negotiation Coach. 
-1. Explain the risk.
-2. Draft a redline.
-3. Provide a negotiation argument.
-"""
+COACH_INSTRUCTION = "You are a Negotiation Coach. Explain the risk, draft a redline, and provide a negotiation argument."
 
 def process_file(uploaded_file):
     try:
@@ -270,22 +242,13 @@ def analyze_contract(text, filename="Unknown", file_size=0, license_key="Unknown
         st.error("⚠️ System Error: API Key missing.")
         return None
         
-    # 1. Log to Discord
     log_usage(license_key, filename, file_size)
     
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     try:
-        # 2. Limit Token Output for Cost Control
-        config = genai.types.GenerationConfig(
-            response_mime_type="application/json", 
-            temperature=0.0,
-            max_output_tokens=2500 
-        )
-        response = model.generate_content(
-            f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{text}", 
-            generation_config=config
-        )
+        config = genai.types.GenerationConfig(response_mime_type="application/json", temperature=0.0, max_output_tokens=2500)
+        response = model.generate_content(f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{text}", generation_config=config)
         return response.text
     except Exception as e:
         return None
@@ -309,17 +272,13 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # --- LICENSE GATE STATE ---
-    if 'license_verified' not in st.session_state:
-        st.session_state.license_verified = False
-    if 'license_key' not in st.session_state:
-        st.session_state.license_key = ""
+    if 'license_verified' not in st.session_state: st.session_state.license_verified = False
+    if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
-    # --- SIDEBAR ---
     with st.sidebar:
         st.title("🛡️ Secure Portal")
         st.markdown("**Strategic Contract Assessment**")
-        st.caption(f"v{APP_VERSION}") # Removed TLS 1.3
+        st.caption(f"v{APP_VERSION}")
         st.markdown("---")
 
         if not st.session_state.license_verified:
@@ -332,10 +291,8 @@ def main():
                     st.session_state.license_key = entered_key
                     st.success(msg)
                     st.rerun()
-                else:
-                    st.error(msg)
+                else: st.error(msg)
             st.markdown("---")
-            st.info("No key? Purchase access via Gumroad.")
             st.stop()
         else:
             st.success("✅ License Active")
@@ -349,10 +306,8 @@ def main():
         if uploaded_file and uploaded_file.size > 30 * 1024 * 1024:
             st.error("File exceeds 30MB limit.")
             uploaded_file = None
-        
         if uploaded_file: st.success("✅ Encrypted & Buffered")
 
-    # --- MAIN CONTENT ---
     st.markdown("## Strategic Contract Assessment")
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
@@ -371,7 +326,6 @@ def main():
             time.sleep(0.5); progress.progress(25)
             status_text.text("🧠 Analyzing commercial terms and deep dive vectors...")
             
-            # CALL ANALYSIS WITH LOGGING
             raw_response = analyze_contract(
                 st.session_state.file_data,
                 filename=uploaded_file.name,
@@ -389,10 +343,10 @@ def main():
                     progress.progress(100); time.sleep(0.5); st.rerun()
                 else:
                     st.error("Data parsing error. The AI returned an invalid format.")
-            else: 
-                st.error("Analysis timed out. Please try again.")
+                    with st.expander("Show Raw Debug Data (Send this to support)"):
+                        st.code(raw_response)
+            else: st.error("Analysis timed out. Please try again.")
 
-    # --- RESULTS DASHBOARD ---
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         c1, c2, c3 = st.columns(3)
