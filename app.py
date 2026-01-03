@@ -23,7 +23,7 @@ except:
 
 # 2. GUMROAD CONFIGURATION (Replace with your actual ID)
 # Get this from your Gumroad Product -> Content Tab -> License Key element
-GUMROAD_PRODUCT_ID = "YOUR_GUMROAD_PRODUCT_ID_HERE" 
+GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
 APP_VERSION = "1.1.0"
