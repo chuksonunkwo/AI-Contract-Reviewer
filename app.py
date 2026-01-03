@@ -11,22 +11,27 @@ import re
 import pandas as pd
 import os
 
-# --- CONFIGURATION (UPDATED FOR RENDER) ---
-# This tries to get the key from Render's Environment Variables first.
-# If not found, it falls back to a placeholder.
-try:
-    API_KEY = os.environ.get("GEMINI_API_KEY")
-    if not API_KEY:
-        # Fallback for local testing (optional)
+# --- CONFIGURATION (RENDER COMPATIBLE) ---
+# 1. Try to get key from Render Environment Variables (Best for Production)
+API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# 2. If not found in Render, check Streamlit Secrets (Best for Local/Streamlit Cloud)
+if not API_KEY:
+    try:
         API_KEY = st.secrets["GEMINI_API_KEY"]
-except:
-    API_KEY = "ENTER_YOUR_API_KEY_HERE"
+    except:
+        pass
+
+# 3. Fallback: If neither exists, warn the user (don't crash immediately)
+if not API_KEY:
+    API_KEY = "MISSING_KEY"
 
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # --- HELPER FUNCTIONS ---
 def safe_get(data, path, default="N/A"):
+    """Safely drills down into a dictionary without crashing if a key is missing."""
     try:
         current = data
         for key in path:
@@ -42,16 +47,34 @@ def safe_get(data, path, default="N/A"):
         return default
 
 def clean_text(text):
+    """Cleans text for PDF generation (removes unsupported characters)."""
     if not isinstance(text, str): return str(text)
     replacements = {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."}
     for char, replacement in replacements.items():
         text = text.replace(char, replacement)
     return text.encode('latin-1', 'ignore').decode('latin-1')
 
-def sanitize_json(text):
-    text = text.replace("```json", "").replace("```", "")
-    text = re.sub(r'[\\x00-\\x1f\\x7f]', '', text) 
-    return text
+def extract_json(text):
+    """
+    Surgical JSON Extractor:
+    Finds the first '{' and the last '}' to isolate the JSON object,
+    ignoring any conversational filler the AI might add.
+    """
+    try:
+        # 1. Remove markdown code fences if present
+        text = text.replace("```json", "").replace("```", "")
+        
+        # 2. Find the start and end of the actual JSON structure
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        
+        if start != -1 and end != -1:
+            json_str = text[start:end]
+            return json.loads(json_str)
+        else:
+            return None # No JSON found
+    except Exception as e:
+        return None
 
 # --- PDF ENGINE ---
 class StrategicReport(FPDF):
@@ -208,13 +231,15 @@ def process_file(uploaded_file):
     except: return None
 
 def analyze_contract(text):
-    if not API_KEY or "ENTER_YOUR" in API_KEY:
-        st.error("⚠️ System configuration error: API Key missing.")
+    if not API_KEY or API_KEY == "MISSING_KEY":
+        st.error("⚠️ SYSTEM ERROR: API Key is missing.")
+        st.info("If you are the admin, please add 'GEMINI_API_KEY' to your Render Environment Variables.")
         return None
         
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     try:
+        # Temperature 0.0 forces the AI to be precise
         response = model.generate_content(
             f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{text}", 
             generation_config={"response_mime_type": "application/json", "temperature": 0.0}
@@ -231,13 +256,6 @@ def main():
         st.caption(f"v{APP_VERSION} | TLS 1.3")
         st.markdown("---")
         
-        # --- PASSWORD GATE (UNCOMMENT TO SELL ACCESS) ---
-        # pwd = st.text_input("🔑 Access Key", type="password")
-        # if pwd != "oilgas2025":  # Change this password!
-        #     st.warning("Please enter your Access Key.")
-        #     st.stop()
-        # ------------------------------------------------
-
         uploaded_file = st.file_uploader("Upload Agreement", type=["pdf", "docx", "txt"])
         if uploaded_file and uploaded_file.size > 30 * 1024 * 1024:
             st.error("File exceeds 30MB limit.")
@@ -262,17 +280,24 @@ def main():
             status_text.text("🔄 Establishing secure uplink to Neural Engine...")
             time.sleep(0.5); progress.progress(25)
             status_text.text("🧠 Analyzing commercial terms and deep dive vectors...")
-            json_res = analyze_contract(st.session_state.file_data)
+            
+            raw_response = analyze_contract(st.session_state.file_data)
             progress.progress(75)
             
-            if json_res:
+            if raw_response:
                 status_text.text("✨ Synthesizing Executive Report...")
-                try:
-                    clean = sanitize_json(json_res)
-                    st.session_state.analysis = json.loads(clean)
+                # USE THE NEW SURGICAL PARSER
+                data_dict = extract_json(raw_response)
+                
+                if data_dict:
+                    st.session_state.analysis = data_dict
                     progress.progress(100); time.sleep(0.5); st.rerun()
-                except Exception as e: st.error(f"Data parsing error. Please retry. ({e})")
-            else: st.error("Analysis timed out. Please try again.")
+                else:
+                    st.error("Data parsing error. The AI returned an invalid format.")
+                    # Optional: Print raw response for debugging
+                    # st.code(raw_response) 
+            else: 
+                st.error("Analysis timed out or API Key invalid. Please try again.")
 
     if "analysis" in st.session_state:
         data = st.session_state.analysis
