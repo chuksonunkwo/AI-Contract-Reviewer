@@ -10,69 +10,96 @@ import time
 import re
 import pandas as pd
 import os
-import requests  # NEW: Required for Gumroad API
+import requests  # Required for Gumroad & Discord
 
-# --- CONFIGURATION ---
+# ==========================================
+# ⚙️ CONFIGURATION & SECRETS
+# ==========================================
+ACTIVE_MODEL = "gemini-2.0-flash-exp"
+APP_VERSION = "1.1.0"
+
 # 1. API KEY (Gemini)
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
         API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    API_KEY = "ENTER_YOUR_API_KEY_HERE"
+    API_KEY = "MISSING_KEY"
 
-# 2. GUMROAD CONFIGURATION (Replace with your actual ID)
-# Get this from your Gumroad Product -> Content Tab -> License Key element
+# 2. DISCORD WEBHOOK (The Watchtower)
+# Add this to Render Environment Variables as 'DISCORD_WEBHOOK_URL'
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
+
+# 3. GUMROAD CONFIGURATION
+# Replace this with your actual ID from the Gumroad "Content" tab
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
-ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.1.0"
+# ==========================================
+# 🛠️ HELPER FUNCTIONS
+# ==========================================
 
-# --- HELPER FUNCTIONS ---
 def check_gumroad_license(key):
-    """
-    Verifies the license key with Gumroad's API.
-    Returns (True, message) if valid, (False, message) if invalid.
-    """
+    """Verifies license validity, cancellation status, and refunds."""
     url = "https://api.gumroad.com/v2/licenses/verify"
     params = {
         "product_id": GUMROAD_PRODUCT_ID,
         "license_key": key,
-        "increment_uses_count": "false"  # Don't use up "activations" just for logging in
+        "increment_uses_count": "false"
     }
     
     try:
         response = requests.post(url, data=params)
         data = response.json()
         
-        # 1. Check if key exists and is generally valid
         if not data.get("success"):
-            return False, "❌ Invalid License Key. Please check your email."
+            return False, "❌ Invalid License Key."
             
         purchase = data.get("purchase", {})
         
-        # 2. Check for Refunds or Chargebacks
         if purchase.get("refunded") or purchase.get("chargebacked"):
-             return False, "⛔ Access denied: This purchase has been refunded."
+             return False, "⛔ Access denied: Purchase refunded."
 
-        # 3. Check Subscription Status (For Monthly Access)
-        # If subscription_cancelled_at is NOT null, they cancelled.
-        # But we also check if 'subscription_ended_at' is past.
-        # If they cancelled but still have time left, we might want to let them in,
-        # but for strict security, we can block cancellation immediately.
-        
         if purchase.get("subscription_cancelled_at"):
-             # Optional: Check if the end date is in the future to allow "remainder" access
-             # For now, we block immediately for security.
-             return False, "⚠️ Subscription Cancelled. Please reactivate to access."
+             return False, "⚠️ Subscription Cancelled. Reactivate to access."
              
         if purchase.get("subscription_failed_at"):
-             return False, "⚠️ Payment Failed. Please update your billing info."
+             return False, "⚠️ Payment Failed. Update billing info."
 
         return True, "✅ Access Granted"
         
     except Exception as e:
         return False, f"Connection Error: {str(e)}"
+
+def log_usage(license_key, filename, file_size):
+    """Sends a ping to Discord when a contract is analyzed."""
+    if not DISCORD_WEBHOOK: return
+    
+    masked_key = f"****{license_key[-4:]}" if len(license_key) > 4 else "Unknown"
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    size_mb = round(file_size / (1024 * 1024), 2)
+    
+    message = {
+        "content": f"🚨 **Analysis Run**\n"
+                   f"👤 **User:** `{masked_key}`\n"
+                   f"📄 **File:** `{filename}` ({size_mb} MB)\n"
+                   f"⏰ **Time:** {timestamp}"
+    }
+    try:
+        requests.post(DISCORD_WEBHOOK, json=message)
+    except:
+        pass
+
+def extract_json(text):
+    """Surgical extractor to find JSON within AI chatter."""
+    text = text.replace("```json", "").replace("```", "")
+    text = re.sub(r'[\\x00-\\x1f\\x7f]', '', text) 
+    try:
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        if start != -1 and end != -1:
+            return json.loads(text[start:end])
+        return None
+    except: return None
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -96,18 +123,9 @@ def clean_text(text):
         text = text.replace(char, replacement)
     return text.encode('latin-1', 'ignore').decode('latin-1')
 
-def extract_json(text):
-    text = text.replace("```json", "").replace("```", "")
-    text = re.sub(r'[\\x00-\\x1f\\x7f]', '', text) 
-    try:
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end != -1:
-            return json.loads(text[start:end])
-        return None
-    except: return None
-
-# --- PDF ENGINE ---
+# ==========================================
+# 📄 PDF ENGINE
+# ==========================================
 class StrategicReport(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 10)
@@ -126,18 +144,20 @@ def create_pdf(data):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # PDF GENERATION LOGIC (Same as before)
+    # Title
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(0, 0, 0)
     title = safe_get(data, ['contractDetails', 'title'], 'Contract Analysis')
     pdf.multi_cell(0, 8, clean_text(title), 0, 'L')
     pdf.ln(5)
     
+    # Score
     pdf.set_font("Helvetica", "", 10)
     score = safe_get(data, ['riskScore', 'score'])
     pdf.cell(0, 8, f"Date: {datetime.date.today()} | Risk Score: {score}/100", 0, 1, 'L')
     pdf.ln(5)
     
+    # Exec Summary
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
@@ -147,6 +167,7 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, clean_text(summary))
     pdf.ln(5)
 
+    # Vendor Intel
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "2. VENDOR INTELLIGENCE", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -162,6 +183,7 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, clean_text(safe_get(data, ['compliance', 'sanctions', 'details'])))
     pdf.ln(5)
 
+    # Risk Table
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "3. KEY RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -175,6 +197,7 @@ def create_pdf(data):
         pdf.multi_cell(0, 6, clean_text(item.get('finding', '')))
         pdf.ln(3)
         
+    # Deep Dive
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "4. DETAILED DEEP DIVE ANALYSIS", 0, 1, 'L', fill=True)
@@ -186,22 +209,24 @@ def create_pdf(data):
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- SYSTEM BRAIN ---
+# ==========================================
+# 🧠 AI ENGINE (PROMPTS)
+# ==========================================
 BASE_INSTRUCTION = """
 You are Contract Engine, a Senior Contract Analyst for an Oil & Gas Major.
 Analyze the contract text and return ONLY a raw JSON object.
 
 EXTRACTION RULES:
 1. Commercials: If Schedule of Rates/Unit Rate, value must be "Schedule of Rates".
-2. Duration: Extract exact dates/options.
-3. Vendor Intel: Use internal knowledge (Sanctions, Financials).
+2. Duration: Extract exact dates and extension options (e.g. "3 Years (Jan 2022 - Dec 2024) + 1 Year Option").
+3. Vendor Intel: Use internal knowledge to assess Counterparty (Sanctions, Financials).
 4. Deep Dive: Provide detailed markdown report.
 
 JSON SCHEMA:
 {
   "contractDetails": { "title": "string", "parties": ["string"] },
   "riskScore": { "score": 0-100, "level": "High/Medium/Low" },
-  "executiveSummary": "Markdown bullets (BLUF).",
+  "executiveSummary": "Markdown bullet points (BLUF).",
   "commercials": { "value": "string", "duration": "string" },
   "compliance": {
       "entity": "string",
@@ -240,22 +265,34 @@ def process_file(uploaded_file):
         return None
     except: return None
 
-def analyze_contract(text):
+def analyze_contract(text, filename="Unknown", file_size=0, license_key="Unknown"):
     if not API_KEY or API_KEY == "MISSING_KEY":
         st.error("⚠️ System Error: API Key missing.")
         return None
+        
+    # 1. Log to Discord
+    log_usage(license_key, filename, file_size)
+    
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     try:
+        # 2. Limit Token Output for Cost Control
+        config = genai.types.GenerationConfig(
+            response_mime_type="application/json", 
+            temperature=0.0,
+            max_output_tokens=2500 
+        )
         response = model.generate_content(
             f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{text}", 
-            generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+            generation_config=config
         )
         return response.text
     except Exception as e:
         return None
 
-# --- MAIN APP ---
+# ==========================================
+# 🖥️ MAIN UI
+# ==========================================
 def main():
     st.set_page_config(page_title="Strategic Contract Assessment", layout="wide", page_icon="🛡️")
     st.markdown("""
@@ -272,10 +309,13 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # --- LICENSE GATE ---
+    # --- LICENSE GATE STATE ---
     if 'license_verified' not in st.session_state:
         st.session_state.license_verified = False
+    if 'license_key' not in st.session_state:
+        st.session_state.license_key = ""
 
+    # --- SIDEBAR ---
     with st.sidebar:
         st.title("🛡️ Secure Portal")
         st.markdown("**Strategic Contract Assessment**")
@@ -284,22 +324,24 @@ def main():
 
         if not st.session_state.license_verified:
             st.warning("🔒 Login Required")
-            license_key = st.text_input("Enter License Key", type="password")
+            entered_key = st.text_input("Enter License Key", type="password")
             if st.button("Verify License"):
-                valid, msg = check_gumroad_license(license_key)
+                valid, msg = check_gumroad_license(entered_key)
                 if valid:
                     st.session_state.license_verified = True
+                    st.session_state.license_key = entered_key
                     st.success(msg)
                     st.rerun()
                 else:
                     st.error(msg)
             st.markdown("---")
-            st.info("Need a key? Purchase access at [Your Gumroad Link]")
-            st.stop() # Stop here if not verified
+            st.info("No key? Purchase access via Gumroad.")
+            st.stop()
         else:
             st.success("✅ License Active")
             if st.button("Logout"):
                 st.session_state.license_verified = False
+                st.session_state.license_key = ""
                 st.rerun()
             st.markdown("---")
 
@@ -310,6 +352,7 @@ def main():
         
         if uploaded_file: st.success("✅ Encrypted & Buffered")
 
+    # --- MAIN CONTENT ---
     st.markdown("## Strategic Contract Assessment")
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
@@ -328,7 +371,13 @@ def main():
             time.sleep(0.5); progress.progress(25)
             status_text.text("🧠 Analyzing commercial terms and deep dive vectors...")
             
-            raw_response = analyze_contract(st.session_state.file_data)
+            # CALL ANALYSIS WITH LOGGING
+            raw_response = analyze_contract(
+                st.session_state.file_data,
+                filename=uploaded_file.name,
+                file_size=uploaded_file.size,
+                license_key=st.session_state.license_key
+            )
             progress.progress(75)
             
             if raw_response:
@@ -343,6 +392,7 @@ def main():
             else: 
                 st.error("Analysis timed out. Please try again.")
 
+    # --- RESULTS DASHBOARD ---
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         c1, c2, c3 = st.columns(3)
