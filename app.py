@@ -17,7 +17,7 @@ import ast
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.1.2 (Stable)"
+APP_VERSION = "1"
 
 # 1. API KEY
 try:
