@@ -18,11 +18,17 @@ import gc
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "2.2.0 (Enterprise Speed-Tuned)"
+APP_VERSION = "1.0.0 (Stable Release)"
+
+# ⚡ SAFETY VALVE: Prevents Timeouts & Crashes
+# We limit analysis to the first 50 pages. 
+# This captures the Main Agreement, Definitions, and Key Liabilities 
+# while skipping the heavy technical appendices that crash the server.
+MAX_PAGES_TO_READ = 50  
 
 # Tuning the "Chunking Engine"
-CHUNK_SIZE = 80000      # Increased to ~30 pages for speed
-OVERLAP_SIZE = 2000     # Overlap to catch clauses cut between chunks
+CHUNK_SIZE = 80000      
+OVERLAP_SIZE = 2000     
 
 # 1. API KEY
 try:
@@ -227,7 +233,6 @@ def create_pdf(data):
 # 🧠 AI ENGINE (4-PILLAR ARCHITECTURE)
 # ==========================================
 
-# 1. The "Universal Scan" Prompt (4 Pillars)
 MAP_PROMPT = """
 You are a Senior Contract Analyst. Analyze this section of the contract (Text provided below).
 The text includes page markers [=== PAGE X ===]. Always cite these page numbers in your findings.
@@ -259,7 +264,6 @@ Extract and categorize findings into this JSON structure:
 If a section is empty, leave the list empty. Do not hallucinate.
 """
 
-# 2. The "Synthesis" Prompt (Weighed Scoring)
 REDUCE_PROMPT = """
 You are the Chief Legal Officer. Merge these partial findings into a Final Strategic Report.
 
@@ -293,26 +297,44 @@ Return ONLY this Final JSON:
 COACH_INSTRUCTION = "You are a Negotiation Coach. Explain the risk, draft a redline, and provide a negotiation argument."
 
 def process_file_with_markers(uploaded_file):
+    """
+    SAFETY VALVE: Reads file but stops after MAX_PAGES_TO_READ.
+    This prevents the server from crashing on large files.
+    """
     text = ""
     try:
         if "pdf" in uploaded_file.type:
             reader = PyPDF2.PdfReader(uploaded_file)
-            for i, page in enumerate(reader.pages):
-                page_content = page.extract_text()
+            # Enforce the Page Cap
+            pages_to_read = min(len(reader.pages), MAX_PAGES_TO_READ)
+            
+            for i in range(pages_to_read):
+                page_content = reader.pages[i].extract_text()
                 if page_content:
                     text += f"\n\n[=== PAGE {i+1} ===]\n{page_content}"
+            
+            # If file was cut short, add a marker
+            if len(reader.pages) > MAX_PAGES_TO_READ:
+                text += "\n\n[=== DOCUMENT TRUNCATED FOR STABILITY ===]"
+            
             gc.collect()
             return text
+            
         elif "word" in uploaded_file.type:
             doc = docx.Document(uploaded_file)
+            # Word Doc Safety Cap (approx 1000 paragraphs ~ 50 pages)
+            max_paras = 1000
             for i, para in enumerate(doc.paragraphs):
+                if i >= max_paras: break
                 if i % 20 == 0:
                     text += f"\n\n[=== SECTION {int(i/20)+1} ===]\n"
                 text += para.text + "\n"
             gc.collect()
             return text
+            
         elif "text" in uploaded_file.type:
-            return StringIO(uploaded_file.getvalue().decode("utf-8")).read()
+            return StringIO(uploaded_file.getvalue().decode("utf-8")).read()[:300000] # Cap text files too
+            
     except: return None
     return None
 
@@ -359,7 +381,9 @@ def analyze_contract_map_reduce(full_text, filename, file_size, license_key):
     progress_bar.progress(90)
     try:
         combined_data = "\n---\n".join(partial_results)
+        # Limit context to prevent token overflow
         if len(combined_data) > 800000: combined_data = combined_data[:800000]
+        
         config = genai.types.GenerationConfig(response_mime_type="application/json", temperature=0.0)
         final_response = model.generate_content(f"{REDUCE_PROMPT}\n\nEXTRACTED DATA:\n{combined_data}", generation_config=config)
         progress_bar.progress(100)
@@ -427,7 +451,9 @@ def main():
                 text = process_file_with_markers(uploaded_file)
                 if text: 
                     st.session_state.file_data = text
-                    if len(text) > 2000000: st.warning("⚠️ Large File Detected. Enabling Enterprise Processing Mode.")
+                    # Inform user about the safety cap
+                    if len(text) > 100000: 
+                        st.info(f"ℹ️ Large File Optimized: Analysis focused on the first {MAX_PAGES_TO_READ} pages to ensure stability.")
                 else: st.error("Corrupt file."); st.stop()
 
         if st.button("Initialize Enterprise Analysis"):
