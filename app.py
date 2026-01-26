@@ -12,12 +12,14 @@ import pandas as pd
 import os
 import requests
 import ast
+import gc  # Added for memory management
 
 # ==========================================
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.2.0 (High-Capacity)"
+APP_VERSION = "1.3.0 (Stability Edition)"
+MAX_PAGES_TO_READ = 75  # ⚡ SAFETY VALVE: Prevents RAM crashes on large files
 
 # 1. API KEY
 try:
@@ -36,56 +38,31 @@ GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg=="
 # ==========================================
 
 def repair_json(json_str):
-    """
-    Attempts to fix truncated JSON by adding missing closing brackets.
-    """
+    """Attempts to fix truncated JSON by adding missing closing brackets."""
     json_str = json_str.strip()
     open_braces = json_str.count('{')
     close_braces = json_str.count('}')
     open_brackets = json_str.count('[')
     close_brackets = json_str.count(']')
-    
-    # Add missing brackets/braces
     json_str += ']' * (open_brackets - close_brackets)
     json_str += '}' * (open_braces - close_braces)
-    
     return json_str
 
 def extract_json(text):
-    """
-    Robust JSON Extractor v3:
-    1. Strips Markdown
-    2. Finds main JSON block
-    3. Repairs truncated JSON
-    4. Safe Fallback
-    """
+    """Robust JSON Extractor v3"""
     try:
-        # 1. Remove Markdown code blocks
         text = re.sub(r"```[a-zA-Z]*", "", text)
         text = text.replace("```", "")
-        
-        # 2. Find the first '{' and the last '}'
         start = text.find('{')
         end = text.rfind('}') + 1
-        
         if start == -1: return None
-        
-        # If valid end not found, assume it was cut off and take everything
-        if end <= start: 
-            json_str = text[start:]
-        else:
-            json_str = text[start:end]
-
-        # 3. Attempt to parse
+        json_str = text[start:] if end <= start else text[start:end]
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # 4. Repair and retry
             try:
-                repaired = repair_json(json_str)
-                return json.loads(repaired)
+                return json.loads(repair_json(json_str))
             except:
-                # 5. Last resort: Python Eval
                 try:
                     return ast.literal_eval(json_str)
                 except:
@@ -154,20 +131,17 @@ def create_pdf(data):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Title
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(0, 0, 0)
     title = safe_get(data, ['contractDetails', 'title'], 'Contract Analysis')
     pdf.multi_cell(0, 8, clean_text(title), 0, 'L')
     pdf.ln(5)
     
-    # Score
     pdf.set_font("Helvetica", "", 10)
     score = safe_get(data, ['riskScore', 'score'])
     pdf.cell(0, 8, f"Date: {datetime.date.today()} | Risk Score: {score}/100", 0, 1, 'L')
     pdf.ln(5)
     
-    # Exec Summary
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
@@ -177,7 +151,6 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, clean_text(summary))
     pdf.ln(5)
 
-    # Vendor Intel
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "2. VENDOR INTELLIGENCE", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -185,15 +158,10 @@ def create_pdf(data):
     pdf.cell(40, 6, "Entity:", 0, 0)
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, clean_text(safe_get(data, ['compliance', 'entity'])), 0, 1)
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(40, 6, "Sanctions:", 0, 0)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, clean_text(safe_get(data, ['compliance', 'sanctions', 'status'])), 0, 1)
     pdf.ln(2)
     pdf.multi_cell(0, 6, clean_text(safe_get(data, ['compliance', 'sanctions', 'details'])))
     pdf.ln(5)
 
-    # Risk Table
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "3. KEY RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -207,7 +175,6 @@ def create_pdf(data):
         pdf.multi_cell(0, 6, clean_text(item.get('finding', '')))
         pdf.ln(3)
         
-    # Deep Dive
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "4. DETAILED DEEP DIVE ANALYSIS", 0, 1, 'L', fill=True)
@@ -224,7 +191,7 @@ def create_pdf(data):
 # ==========================================
 BASE_INSTRUCTION = """
 You are Contract Engine. Analyze the contract and return a JSON object.
-If the text is too long, prioritize the Executive Summary and Key Risks.
+Focus on the first section of the text provided as it contains the critical terms.
 
 JSON SCHEMA:
 {
@@ -249,20 +216,37 @@ JSON SCHEMA:
 COACH_INSTRUCTION = "You are a Negotiation Coach. Explain the risk, draft a redline, and provide a negotiation argument."
 
 def process_file(uploaded_file):
+    """
+    Reads the file but STOPS after MAX_PAGES_TO_READ to prevent server crash.
+    """
     try:
+        text = ""
         if "pdf" in uploaded_file.type:
             reader = PyPDF2.PdfReader(uploaded_file)
-            text = ""
-            for page in reader.pages: text += page.extract_text()
+            num_pages = len(reader.pages)
+            # 🛑 SAFETY VALVE: Only read first X pages
+            read_limit = min(num_pages, MAX_PAGES_TO_READ)
+            
+            for i in range(read_limit):
+                page_text = reader.pages[i].extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            
+            # Explicitly clear memory
+            reader = None
+            gc.collect()
             return text
+
         elif "word" in uploaded_file.type:
             doc = docx.Document(uploaded_file)
-            text = "\\n".join([p.text for p in doc.paragraphs])
+            text = "\n".join([p.text for p in doc.paragraphs])
+            gc.collect()
             return text
         elif "text" in uploaded_file.type:
             return StringIO(uploaded_file.getvalue().decode("utf-8")).read()
         return None
-    except: return None
+    except Exception as e:
+        return None
 
 def analyze_contract(text, filename="Unknown", file_size=0, license_key="Unknown"):
     if not API_KEY or API_KEY == "MISSING_KEY":
@@ -274,14 +258,13 @@ def analyze_contract(text, filename="Unknown", file_size=0, license_key="Unknown
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     try:
-        # INCREASED TOKEN LIMIT TO 8192 FOR LARGE FILES
         config = genai.types.GenerationConfig(
             response_mime_type="application/json", 
             temperature=0.0,
             max_output_tokens=8192 
         )
-        # TRUNCATE INPUT TEXT IF TOO MASSIVE TO PREVENT API ERRORS
-        safe_text = text[:800000] # Approx 200k words limit safety
+        # 🛑 SAFETY CAP: Limit chars sent to Google to prevent timeout
+        safe_text = text[:300000] # Reduced to ~75k words for stability
         
         response = model.generate_content(f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{safe_text}", generation_config=config)
         return response.text
@@ -338,9 +321,6 @@ def main():
             st.markdown("---")
 
         uploaded_file = st.file_uploader("Upload Agreement", type=["pdf", "docx", "txt"])
-        if uploaded_file and uploaded_file.size > 50 * 1024 * 1024:
-            st.error("File exceeds 50MB limit.")
-            uploaded_file = None
         if uploaded_file: st.success("✅ Encrypted & Buffered")
 
     st.markdown("## Strategic Contract Assessment")
@@ -351,15 +331,20 @@ def main():
         if "file_data" not in st.session_state:
             with st.spinner("Processing document structure..."):
                 text = process_file(uploaded_file)
-                if text: st.session_state.file_data = text
-                else: st.error("Corrupt or unreadable file."); st.stop()
+                if text: 
+                    st.session_state.file_data = text
+                    # Notify user if file was large
+                    if len(text) > 100000:
+                        st.caption(f"ℹ️ Large document detected. Analysis optimized for the first {MAX_PAGES_TO_READ} pages to ensure stability.")
+                else: 
+                    st.error("Corrupt or unreadable file."); st.stop()
 
         if st.button("Initialize Strategic Analysis"):
             progress = st.progress(0)
             status_text = st.empty()
             status_text.text("🔄 Establishing secure uplink to Neural Engine...")
             time.sleep(0.5); progress.progress(25)
-            status_text.text("🧠 Analyzing commercial terms and deep dive vectors (This may take 30s)...")
+            status_text.text("🧠 Analyzing commercial terms (This may take up to 60s)...")
             
             raw_response = analyze_contract(
                 st.session_state.file_data,
@@ -378,14 +363,13 @@ def main():
                     progress.progress(100); time.sleep(0.5); st.rerun()
                 else:
                     st.warning("⚠️ Structure Parse Warning: Switching to Raw View")
-                    # FALLBACK: Create a dummy dict so the user can at least see the text
                     st.session_state.analysis = {
                         "riskScore": {"score": 0, "level": "See Text"},
-                        "executiveSummary": raw_response, # Show raw text here
+                        "executiveSummary": raw_response,
                         "deepDive": "See Executive Summary for full output."
                     }
                     st.rerun()
-            else: st.error("Analysis timed out. Please try again.")
+            else: st.error("Analysis timed out. Server load too high. Please try again.")
 
     if "analysis" in st.session_state:
         data = st.session_state.analysis
