@@ -20,10 +20,10 @@ import gc
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
 APP_VERSION = "1.0.0 (Stable Release)"
 
-# ⚡ SAFETY VALVE: Prevents Timeouts & Crashes
+# ⚡ SAFETY VALVE: Prevents Server Crashes
 # We limit analysis to the first 50 pages. 
-# This captures the Main Agreement, Definitions, and Key Liabilities 
-# while skipping the heavy technical appendices that crash the server.
+# This captures the Master Agreement & Key Risks while skipping 
+# heavy technical appendices that kill the 512MB Server RAM.
 MAX_PAGES_TO_READ = 50  
 
 # Tuning the "Chunking Engine"
@@ -305,8 +305,9 @@ def process_file_with_markers(uploaded_file):
     try:
         if "pdf" in uploaded_file.type:
             reader = PyPDF2.PdfReader(uploaded_file)
-            # Enforce the Page Cap
-            pages_to_read = min(len(reader.pages), MAX_PAGES_TO_READ)
+            # 🛑 CRITICAL FIX: Limit the Loop Range, don't just extract everything
+            num_pages = len(reader.pages)
+            pages_to_read = min(num_pages, MAX_PAGES_TO_READ)
             
             for i in range(pages_to_read):
                 page_content = reader.pages[i].extract_text()
@@ -314,8 +315,8 @@ def process_file_with_markers(uploaded_file):
                     text += f"\n\n[=== PAGE {i+1} ===]\n{page_content}"
             
             # If file was cut short, add a marker
-            if len(reader.pages) > MAX_PAGES_TO_READ:
-                text += "\n\n[=== DOCUMENT TRUNCATED FOR STABILITY ===]"
+            if num_pages > MAX_PAGES_TO_READ:
+                text += f"\n\n[=== DOCUMENT TRUNCATED AT PAGE {MAX_PAGES_TO_READ} FOR STABILITY ===]"
             
             gc.collect()
             return text
@@ -451,9 +452,8 @@ def main():
                 text = process_file_with_markers(uploaded_file)
                 if text: 
                     st.session_state.file_data = text
-                    # Inform user about the safety cap
-                    if len(text) > 100000: 
-                        st.info(f"ℹ️ Large File Optimized: Analysis focused on the first {MAX_PAGES_TO_READ} pages to ensure stability.")
+                    if "TRUNCATED" in text:
+                        st.info(f"ℹ️ Optimization Active: Analyzing the first {MAX_PAGES_TO_READ} pages to ensure platform stability.")
                 else: st.error("Corrupt file."); st.stop()
 
         if st.button("Initialize Enterprise Analysis"):
@@ -546,6 +546,7 @@ def main():
                     with st.spinner("Analyzing..."):
                         genai.configure(api_key=API_KEY)
                         chat_model = genai.GenerativeModel(ACTIVE_MODEL, system_instruction=COACH_INSTRUCTION)
+                        # Cap context for chat
                         full_prompt = f"Contract Context: {st.session_state.file_data[:30000]}\\n\\nUser Question: {prompt}"
                         response = chat_model.generate_content(full_prompt)
                         st.markdown(response.text)
