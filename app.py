@@ -17,6 +17,14 @@ import gc
 # ==========================================
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
+# FIX FOR 400/502 ERRORS:
+st.set_page_config(
+    page_title="Strategic Contract Assessment", 
+    layout="wide", 
+    page_icon="🛡️",
+    initial_sidebar_state="expanded"
+)
+
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
 APP_VERSION = "1.0.0 (Stable Release)"
 
@@ -317,6 +325,8 @@ def process_file_with_markers(uploaded_file):
             if len(reader.pages) > MAX_PAGES_TO_READ:
                 text += "\n\n[=== DOCUMENT TRUNCATED FOR STABILITY ===]"
             
+            # CLEAR MEMORY IMMEDIATELY
+            reader = None 
             gc.collect()
             return text
             
@@ -397,7 +407,6 @@ def analyze_contract_map_reduce(full_text, filename, file_size, license_key):
 # 🖥️ MAIN UI (ENTERPRISE DASHBOARD)
 # ==========================================
 def main():
-    st.set_page_config(page_title="Strategic Contract Assessment", layout="wide", page_icon="🛡️")
     
     # Premium CSS
     st.markdown("""
@@ -546,6 +555,7 @@ def main():
                     with st.spinner("Analyzing..."):
                         genai.configure(api_key=API_KEY)
                         chat_model = genai.GenerativeModel(ACTIVE_MODEL, system_instruction=COACH_INSTRUCTION)
+                        # Cap context for chat
                         full_prompt = f"Contract Context: {st.session_state.file_data[:30000]}\\n\\nUser Question: {prompt}"
                         response = chat_model.generate_content(full_prompt)
                         st.markdown(response.text)
