@@ -17,7 +17,7 @@ import ast
 # ⚙️ CONFIGURATION & SECRETS
 # ==========================================
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1"
+APP_VERSION = "1.2.0 (High-Capacity)"
 
 # 1. API KEY
 try:
@@ -32,16 +32,35 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🛠️ HELPER FUNCTIONS (UPDATED PARSER)
+# 🛠️ HELPER FUNCTIONS
 # ==========================================
+
+def repair_json(json_str):
+    """
+    Attempts to fix truncated JSON by adding missing closing brackets.
+    """
+    json_str = json_str.strip()
+    open_braces = json_str.count('{')
+    close_braces = json_str.count('}')
+    open_brackets = json_str.count('[')
+    close_brackets = json_str.count(']')
+    
+    # Add missing brackets/braces
+    json_str += ']' * (open_brackets - close_brackets)
+    json_str += '}' * (open_braces - close_braces)
+    
+    return json_str
 
 def extract_json(text):
     """
-    Robust JSON Extractor v2:
-    Handles Markdown, conversational filler, and Python-style dicts.
+    Robust JSON Extractor v3:
+    1. Strips Markdown
+    2. Finds main JSON block
+    3. Repairs truncated JSON
+    4. Safe Fallback
     """
     try:
-        # 1. Remove Markdown code blocks (```json ... ```)
+        # 1. Remove Markdown code blocks
         text = re.sub(r"```[a-zA-Z]*", "", text)
         text = text.replace("```", "")
         
@@ -49,20 +68,28 @@ def extract_json(text):
         start = text.find('{')
         end = text.rfind('}') + 1
         
-        if start == -1 or end == 0:
-            return None
+        if start == -1: return None
+        
+        # If valid end not found, assume it was cut off and take everything
+        if end <= start: 
+            json_str = text[start:]
+        else:
+            json_str = text[start:end]
 
-        json_str = text[start:end]
-
-        # 3. Attempt 1: Standard JSON parsing
+        # 3. Attempt to parse
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # 4. Attempt 2: Python Literal Eval (Handles single quotes issues)
+            # 4. Repair and retry
             try:
-                return ast.literal_eval(json_str)
+                repaired = repair_json(json_str)
+                return json.loads(repaired)
             except:
-                return None
+                # 5. Last resort: Python Eval
+                try:
+                    return ast.literal_eval(json_str)
+                except:
+                    return None
     except:
         return None
 
@@ -85,7 +112,7 @@ def log_usage(license_key, filename, file_size):
     masked_key = f"****{license_key[-4:]}" if len(license_key) > 4 else "Unknown"
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     size_mb = round(file_size / (1024 * 1024), 2)
-    message = {"content": f"🚨 **Analysis Run**\n👤 **User:** `{masked_key}`\nwm **File:** `{filename}` ({size_mb} MB)\n⏰ **Time:** {timestamp}"}
+    message = {"content": f"🚨 **Analysis Run**\n👤 **User:** `{masked_key}`\n📄 **File:** `{filename}` ({size_mb} MB)\n⏰ **Time:** {timestamp}"}
     try: requests.post(DISCORD_WEBHOOK, json=message)
     except: pass
 
@@ -196,8 +223,8 @@ def create_pdf(data):
 # 🧠 AI ENGINE
 # ==========================================
 BASE_INSTRUCTION = """
-You are Contract Engine. Analyze the contract text and return ONLY a raw JSON object.
-Do not add any markdown formatting like ```json or ```. Just the pure JSON string.
+You are Contract Engine. Analyze the contract and return a JSON object.
+If the text is too long, prioritize the Executive Summary and Key Risks.
 
 JSON SCHEMA:
 {
@@ -247,8 +274,16 @@ def analyze_contract(text, filename="Unknown", file_size=0, license_key="Unknown
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     try:
-        config = genai.types.GenerationConfig(response_mime_type="application/json", temperature=0.0, max_output_tokens=2500)
-        response = model.generate_content(f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{text}", generation_config=config)
+        # INCREASED TOKEN LIMIT TO 8192 FOR LARGE FILES
+        config = genai.types.GenerationConfig(
+            response_mime_type="application/json", 
+            temperature=0.0,
+            max_output_tokens=8192 
+        )
+        # TRUNCATE INPUT TEXT IF TOO MASSIVE TO PREVENT API ERRORS
+        safe_text = text[:800000] # Approx 200k words limit safety
+        
+        response = model.generate_content(f"{BASE_INSTRUCTION}\\n\\nDATA:\\n{safe_text}", generation_config=config)
         return response.text
     except Exception as e:
         return None
@@ -303,8 +338,8 @@ def main():
             st.markdown("---")
 
         uploaded_file = st.file_uploader("Upload Agreement", type=["pdf", "docx", "txt"])
-        if uploaded_file and uploaded_file.size > 30 * 1024 * 1024:
-            st.error("File exceeds 30MB limit.")
+        if uploaded_file and uploaded_file.size > 50 * 1024 * 1024:
+            st.error("File exceeds 50MB limit.")
             uploaded_file = None
         if uploaded_file: st.success("✅ Encrypted & Buffered")
 
@@ -324,7 +359,7 @@ def main():
             status_text = st.empty()
             status_text.text("🔄 Establishing secure uplink to Neural Engine...")
             time.sleep(0.5); progress.progress(25)
-            status_text.text("🧠 Analyzing commercial terms and deep dive vectors...")
+            status_text.text("🧠 Analyzing commercial terms and deep dive vectors (This may take 30s)...")
             
             raw_response = analyze_contract(
                 st.session_state.file_data,
@@ -342,9 +377,14 @@ def main():
                     st.session_state.analysis = data_dict
                     progress.progress(100); time.sleep(0.5); st.rerun()
                 else:
-                    st.error("Data parsing error. The AI returned an invalid format.")
-                    with st.expander("Show Raw Debug Data (Send this to support)"):
-                        st.code(raw_response)
+                    st.warning("⚠️ Structure Parse Warning: Switching to Raw View")
+                    # FALLBACK: Create a dummy dict so the user can at least see the text
+                    st.session_state.analysis = {
+                        "riskScore": {"score": 0, "level": "See Text"},
+                        "executiveSummary": raw_response, # Show raw text here
+                        "deepDive": "See Executive Summary for full output."
+                    }
+                    st.rerun()
             else: st.error("Analysis timed out. Please try again.")
 
     if "analysis" in st.session_state:
