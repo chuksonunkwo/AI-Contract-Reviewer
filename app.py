@@ -21,9 +21,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Production Standard
+# ⚡ CORE ENGINE: Gemini 2.0 Flash (Experimental)
+# We stick with this because it has the context window we need.
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.0.0 (Enterprise Edition)"
+APP_VERSION = "1.1.0 (Deep Scan Edition)"
 
 # 1. API KEY
 try:
@@ -181,68 +182,64 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (SEPARATED LEGAL & HSE)
+# 🧠 CLOUD ENGINE (FORENSIC PROMPT)
 # ==========================================
 
 MASTER_PROMPT = """
-You are a Senior Contract Analyst. Scan this ENTIRE document (including Appendices).
+ACT AS A FORENSIC CONTRACT AUDITOR.
+Your task is to review this ENTIRE 200+ page drilling/service contract.
+Do not summarize generic text. Hunt for specific liabilities, costs, and obligations.
 
-EXTRACT THESE SPECIFIC DATA POINTS INTO DISTINCT CATEGORIES:
+### SECTION 1: COMMERCIAL FORENSICS (Look in Appendices/Exhibits)
+- **Base Rates:** Extract the specific daily rates (e.g., "Operating Rate: $150,000/day"). Do not just say "As per Appendix." Find the number.
+- **Hidden Fees:** Look for Mobilization, Demobilization, or "Meals/Accommodation" recharge rates.
+- **Escalation:** Is there a formula to increase rates? (e.g., "CPI + 2%").
 
-1. COMMERCIALS:
-   - Base Day Rate / Fee (Look in Pricing Appendix).
-   - Mobilization Fee.
-   - Early Termination Fee formula.
+### SECTION 2: LEGAL LIABILITIES (The "Killer Clauses")
+- **Indemnity Regime:** Is it strict Knock-for-Knock? Or is there a "Carve-out" for Gross Negligence? (Critical).
+- **Liability Cap:** What is the EXACT cap amount? (e.g., "100% of Annual Contract Value" or "$5,000,000").
+- **Consequential Loss:** Is the waiver mutual? If not, flag it as HIGH RISK.
 
-2. LEGAL RISKS (Strictly Contractual):
-   - Indemnity (Knock-for-Knock? Yes/No).
-   - Liability Cap (Amount or %).
-   - Consequential Loss Waiver (Present/Absent).
-   - Governing Law.
+### SECTION 3: HSE & SAFETY (Operational Criticality)
+- **Bridging Document:** Is a Safety Case or Bridging Document required before start?
+- **Stop Work:** Does the Contractor have explicit "Stop Work Authority" without penalty?
+- **Zero Tolerance:** Are there immediate termination rights for safety breaches (Alcohol/Drugs)?
 
-3. HSE & SAFETY (Operational Safety):
-   - Stop Work Authority clauses.
-   - Safety Case / Bridging Document requirements.
-   - Environmental Liability.
-   - Zero Tolerance Policies.
+### SECTION 4: COMPLIANCE & LOCAL CONTENT (Namibia/Africa Focus)
+- **Quotas:** Are there hard numbers for local hiring? (e.g., "80% Angolan Nationals").
+- **Spend:** Is there a requirement to buy from local vendors?
 
-4. COMPLIANCE:
-   - Local Content requirements (Hiring quotas).
-   - Sanctions warranties.
+### OUTPUT FORMAT (Strict JSON)
+Return ONLY valid JSON. If a value is not found, write "Not Explicitly Stated - Review Appendix".
 
-5. SCOPE:
-   - Rig/Vessel Name.
-   - Duration (Firm + Options).
-
-RETURN ONLY VALID JSON:
 {
   "contractDetails": { "title": "string", "parties": ["string"] },
-  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "string" },
-  "executiveSummary": "Bullet points summary.",
+  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "Forensic rationale based on extracted data." },
+  "executiveSummary": "High-level strategic summary of the deal structure and primary red flags. Use bullet points.",
   "commercials": { 
-      "value": "string", 
-      "duration": "string",
-      "terminationFee": "string"
+      "value": "Extract the specific Day Rate or Total Contract Value", 
+      "duration": "Firm Term + Option Periods (e.g., 2 Years + 1 Year Option)",
+      "terminationFee": "Specific formula (e.g., 70% of Operating Rate)"
   },
   "compliance": {
-      "entity": "string",
-      "sanctions": { "status": "Clean/Flagged", "details": "string" },
-      "localContent": "string"
+      "entity": "Contractor Entity Name",
+      "sanctions": { "status": "Clean/Flagged", "details": "Sanctions clause summary" },
+      "localContent": "Specific local hiring or spending quotas found"
   },
   "riskTable": [
-      { "area": "Indemnity", "risk": "High/Med/Low", "finding": "string" },
-      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "string" },
-      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "string" }
+      { "area": "Indemnity Regime", "risk": "High/Med/Low", "finding": "Quote the specific indemnity structure (e.g., Art 12.1)." },
+      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "The specific monetary cap and any exclusions." },
+      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "Status of the mutual waiver." }
   ],
   "hseTable": [
-      { "area": "Stop Work Authority", "risk": "High/Med/Low", "finding": "string" },
-      { "area": "Environmental", "risk": "High/Med/Low", "finding": "string" }
+      { "area": "Stop Work Authority", "risk": "High/Med/Low", "finding": "Details on right to stop work." },
+      { "area": "Safety Case/Bridging", "risk": "High/Med/Low", "finding": "Requirements for safety documentation." }
   ],
   "operationalTable": [
-      { "area": "Scope", "finding": "string" },
-      { "area": "Equipment", "finding": "string" }
+      { "area": "Scope of Work", "finding": "Summary of the drilling/service campaign." },
+      { "area": "Key Equipment", "finding": "Primary vessel, rig, or equipment specifications." }
   ],
-  "deepDive": "Markdown report."
+  "deepDive": "A comprehensive markdown report. Include a section called '## Hidden Risks in Appendices' where you analyze the back of the contract."
 }
 """
 
@@ -290,7 +287,7 @@ def process_file_cloud(uploaded_file, license_key):
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        with st.spinner("🧠 Analyzing (Auto-Retry Enabled)..."):
+        with st.spinner("🧠 Forensic Scan in Progress (This takes ~60s)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
             # CALL THE RETRY FUNCTION
             response = generate_with_retry(model, MASTER_PROMPT, g_file)
