@@ -21,9 +21,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Back to Gemini 2.0, but with Armor
+# ⚡ CORE ENGINE: Production Standard
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "5.0.0 (Gemini 2.0 + Retry Shield)"
+APP_VERSION = "1.0.0 (Enterprise Edition)"
 
 # 1. API KEY
 try:
@@ -147,9 +147,9 @@ def create_pdf(data):
             pdf.ln(1)
     pdf.ln(5)
 
-    # Risk Table
+    # Legal Risk Table
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "3. KEY RISK VECTORS", 0, 1, 'L', fill=True)
+    pdf.cell(0, 10, "3. LEGAL RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
     risks = safe_get(data, ['riskTable'], [])
     for item in risks:
@@ -161,30 +161,56 @@ def create_pdf(data):
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, finding)
         pdf.ln(3)
+    pdf.ln(5)
+
+    # HSE Table
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, "4. HSE & SAFETY VECTORS", 0, 1, 'L', fill=True)
+    pdf.ln(3)
+    hse = safe_get(data, ['hseTable'], [])
+    for item in hse:
+        pdf.set_font("Helvetica", "B", 10)
+        area = str(item.get('area', 'HSE')).encode('latin-1', 'replace').decode('latin-1')
+        risk_level = str(item.get('risk', '-')).encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
+        pdf.set_font("Helvetica", "", 10)
+        finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 6, finding)
+        pdf.ln(3)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (WITH RETRY LOGIC)
+# 🧠 CLOUD ENGINE (SEPARATED LEGAL & HSE)
 # ==========================================
 
 MASTER_PROMPT = """
 You are a Senior Contract Analyst. Scan this ENTIRE document (including Appendices).
 
-EXTRACT THESE SPECIFIC DATA POINTS:
+EXTRACT THESE SPECIFIC DATA POINTS INTO DISTINCT CATEGORIES:
+
 1. COMMERCIALS:
    - Base Day Rate / Fee (Look in Pricing Appendix).
    - Mobilization Fee.
    - Early Termination Fee formula.
-2. LEGAL RISKS:
+
+2. LEGAL RISKS (Strictly Contractual):
    - Indemnity (Knock-for-Knock? Yes/No).
    - Liability Cap (Amount or %).
    - Consequential Loss Waiver (Present/Absent).
-3. HSE & COMPLIANCE:
+   - Governing Law.
+
+3. HSE & SAFETY (Operational Safety):
    - Stop Work Authority clauses.
+   - Safety Case / Bridging Document requirements.
+   - Environmental Liability.
+   - Zero Tolerance Policies.
+
+4. COMPLIANCE:
    - Local Content requirements (Hiring quotas).
    - Sanctions warranties.
-4. SCOPE:
+
+5. SCOPE:
    - Rig/Vessel Name.
    - Duration (Firm + Options).
 
@@ -206,7 +232,11 @@ RETURN ONLY VALID JSON:
   "riskTable": [
       { "area": "Indemnity", "risk": "High/Med/Low", "finding": "string" },
       { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "string" },
-      { "area": "HSE", "risk": "High/Med/Low", "finding": "string" }
+      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "string" }
+  ],
+  "hseTable": [
+      { "area": "Stop Work Authority", "risk": "High/Med/Low", "finding": "string" },
+      { "area": "Environmental", "risk": "High/Med/Low", "finding": "string" }
   ],
   "operationalTable": [
       { "area": "Scope", "finding": "string" },
@@ -232,7 +262,7 @@ def generate_with_retry(model, prompt, file_obj):
         except exceptions.ResourceExhausted:
             # Hit the rate limit (429)
             if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt) # Exponential backoff: 5s, 10s, 20s
+                wait_time = base_delay * (2 ** attempt) # Exponential backoff
                 st.toast(f"⚠️ API Busy. Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
@@ -356,8 +386,8 @@ def main():
 
         st.markdown("---")
         
-        # TABS
-        t1, t2, t3, t4, t5 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal & HSE", "⚙️ Ops", "🚩 Compliance"])
+        # TABS (NOW 6 TABS)
+        t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
         
         with t1:
             st.subheader("Executive Synthesis")
@@ -376,18 +406,24 @@ def main():
                 st.markdown(comm_data)
 
         with t3:
-            st.subheader("Legal & HSE Risks")
+            st.subheader("Legal Risk Vectors (Contractual)")
             risks = safe_get(data, ['riskTable'], [])
             if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
-            else: st.info("No significant risks detected.")
+            else: st.info("No significant legal risks detected.")
 
         with t4:
+            st.subheader("HSE & Safety Vectors")
+            hse = safe_get(data, ['hseTable'], [])
+            if hse: st.dataframe(pd.DataFrame(hse), use_container_width=True, hide_index=True)
+            else: st.info("No specific HSE flags detected.")
+
+        with t5:
             st.subheader("Operational & Technical Specs")
             ops = safe_get(data, ['operationalTable'], [])
             if ops: st.dataframe(pd.DataFrame(ops), use_container_width=True, hide_index=True)
             else: st.info("No critical operational constraints found.")
 
-        with t5:
+        with t6:
             st.subheader("Compliance & Regulatory")
             comp = safe_get(data, ['compliance'], {})
             if isinstance(comp, dict):
