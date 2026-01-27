@@ -19,9 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# We use 1.5 Flash because it has the 1-Million Token Window stable for Files
-ACTIVE_MODEL = "gemini-1.5-flash"
-APP_VERSION = "4.0.0 (Cloud Direct Architecture)"
+# ⚡ CORE ENGINE: Switched back to Gemini 2.0 as requested
+ACTIVE_MODEL = "gemini-2.0-flash-exp"
+APP_VERSION = "4.1.0 (Gemini 2.0 Cloud Direct)"
 
 # 1. API KEY
 try:
@@ -86,7 +86,7 @@ def safe_get(data, path, default="N/A"):
 def format_currency(value):
     """Clean up messy money strings for the dashboard cards"""
     if not isinstance(value, str): return str(value)
-    if len(value) > 20: return "See Report" # Don't break the UI
+    if len(value) > 20: return "See Report" 
     return value
 
 # ==========================================
@@ -149,7 +149,7 @@ def create_pdf(data):
 # ==========================================
 
 MASTER_PROMPT = """
-You are a Senior Contract Analyst. I have uploaded a contract. 
+You are a Senior Contract Analyst. I have uploaded a contract file. 
 Scan the ENTIRE document from Page 1 to the final Appendix.
 
 Your Job: Extract critical Commercial, Legal, Operational, and Compliance data.
@@ -223,8 +223,6 @@ def process_file_cloud(uploaded_file, license_key):
             
         # 4. Cleanup
         os.remove(tmp_path)
-        # We don't delete from Google immediately to allow chat context, 
-        # but you can add g_file.delete() if privacy is strict.
         
         return response.text, None
         
