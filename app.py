@@ -9,6 +9,7 @@ import tempfile
 import time
 from fpdf import FPDF
 import re
+from google.api_core import exceptions
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -20,9 +21,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Switched to Production Stable to fix 429 Errors
-ACTIVE_MODEL = "gemini-1.5-flash"
-APP_VERSION = "4.3.0 (Production Stable)"
+# ⚡ CORE ENGINE: Back to Gemini 2.0, but with Armor
+ACTIVE_MODEL = "gemini-2.0-flash-exp"
+APP_VERSION = "5.0.0 (Gemini 2.0 + Retry Shield)"
 
 # 1. API KEY
 try:
@@ -32,7 +33,7 @@ try:
 except:
     API_KEY = "MISSING_KEY"
 
-# 2. WEBHOOK & GUMROAD
+# 2. WEBHOOK
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
@@ -55,36 +56,23 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Cloud Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}` | Model: `{ACTIVE_MODEL}`"
         })
     except: pass
 
 def repair_json(json_str):
-    # Remove markdown code blocks
     json_str = re.sub(r"```json", "", json_str)
     json_str = re.sub(r"```", "", json_str)
     json_str = json_str.strip()
-    
-    # Attempt to fix truncated JSON
     open_braces = json_str.count('{')
     close_braces = json_str.count('}')
-    open_brackets = json_str.count('[')
-    close_brackets = json_str.count(']')
-    
-    json_str += ']' * (open_brackets - close_brackets)
     json_str += '}' * (open_braces - close_braces)
-    
     return json_str
 
 def extract_json(text):
     try:
-        # First, try to find the JSON block
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            json_str = match.group(0)
-        else:
-            json_str = text
-
+        json_str = match.group(0) if match else text
         return json.loads(json_str)
     except json.JSONDecodeError:
         try:
@@ -144,9 +132,24 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
+    # Commercials
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, "2. COMMERCIAL TERMS", 0, 1, 'L', fill=True)
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "", 10)
+    comm = safe_get(data, ['commercials'], {})
+    if isinstance(comm, dict):
+        for k, v in comm.items():
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(50, 6, f"{k.capitalize()}:", 0, 0)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 6, str(v).encode('latin-1', 'replace').decode('latin-1'))
+            pdf.ln(1)
+    pdf.ln(5)
+
     # Risk Table
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "2. KEY RISK VECTORS", 0, 1, 'L', fill=True)
+    pdf.cell(0, 10, "3. KEY RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
     risks = safe_get(data, ['riskTable'], [])
     for item in risks:
@@ -162,66 +165,80 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (ENHANCED PROMPTS)
+# 🧠 CLOUD ENGINE (WITH RETRY LOGIC)
 # ==========================================
 
 MASTER_PROMPT = """
-You are a Senior Legal Counsel & Commercial Analyst in the Oil & Gas sector.
-I have uploaded a complex drilling/service contract.
-Scan the ENTIRE document from Page 1 to the final Appendix.
+You are a Senior Contract Analyst. Scan this ENTIRE document (including Appendices).
 
-Your Goal: Provide a "Board-Level" Strategic Risk Assessment.
+EXTRACT THESE SPECIFIC DATA POINTS:
+1. COMMERCIALS:
+   - Base Day Rate / Fee (Look in Pricing Appendix).
+   - Mobilization Fee.
+   - Early Termination Fee formula.
+2. LEGAL RISKS:
+   - Indemnity (Knock-for-Knock? Yes/No).
+   - Liability Cap (Amount or %).
+   - Consequential Loss Waiver (Present/Absent).
+3. HSE & COMPLIANCE:
+   - Stop Work Authority clauses.
+   - Local Content requirements (Hiring quotas).
+   - Sanctions warranties.
+4. SCOPE:
+   - Rig/Vessel Name.
+   - Duration (Firm + Options).
 
-CRITICAL EXTRACTION RULES:
-1. COMMERCIALS: Search the Appendices for the "Schedule of Rates" or "Compensation".
-   - Extract the specific Base Day Rate (e.g. $250,000/day).
-   - Extract Mobilization/Demobilization Fees.
-   - Extract Early Termination Fees (e.g. "50% of day rate").
-   *If exact numbers are redacted, state "Redacted/TBD" but describe the mechanism.*
-
-2. LEGAL RISKS (The "Killer Clauses"):
-   - INDEMNITY: Is it "Knock-for-Knock"? (Good). Or is the Contractor liable for Company negligence? (Bad).
-   - LIABILITY CAP: What is the cap? (e.g. "100% of Contract Price" or "$5M").
-   - CONSEQUENTIAL LOSS: Is there a mutual waiver? (Standard). Or is it missing? (High Risk).
-
-3. COMPLIANCE & HSE:
-   - HSE: Are there specific "Stop Work Authority" or "Zero Tolerance" clauses?
-   - LOCAL CONTENT: (Crucial for Africa/Namibia). What are the hiring quotas or local spend requirements?
-   - SANCTIONS: Are there strict US/EU sanctions warranties?
-
-4. OPERATIONAL SCOPE:
-   - What vessel/rig is named? (e.g. "Deepwater Titan").
-   - What is the firm duration vs option periods?
-
-OUTPUT FORMAT:
-Return strictly valid JSON. Do not write markdown text outside the JSON.
-
+RETURN ONLY VALID JSON:
 {
   "contractDetails": { "title": "string", "parties": ["string"] },
-  "riskScore": { "score": 0-100, "level": "High/Medium/Low", "rationale": "One sentence explaining the score" },
-  "executiveSummary": "A dense, high-value summary of the deal structure, primary risks, and strategic value. Use bullet points.",
+  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "string" },
+  "executiveSummary": "Bullet points summary.",
   "commercials": { 
-      "value": "The Day Rate or Total Value (e.g. $370k/day)", 
-      "duration": "Firm Term + Options (e.g. 2 Wells + 1 Option)",
-      "terminationFee": "Specific formula (e.g. 70% of Rate)"
+      "value": "string", 
+      "duration": "string",
+      "terminationFee": "string"
   },
   "compliance": {
-      "entity": "Contractor Name",
-      "sanctions": { "status": "Clean/Flagged", "details": "Summary of sanctions clause" },
-      "localContent": "Details of local hiring/purchasing obligations"
+      "entity": "string",
+      "sanctions": { "status": "Clean/Flagged", "details": "string" },
+      "localContent": "string"
   },
   "riskTable": [
-      { "area": "Indemnity Regime", "risk": "High/Med/Low", "finding": "Detail the knock-for-knock status and any carve-outs." },
-      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "Specific cap amount and exclusions (e.g. Gross Negligence)." },
-      { "area": "HSE & Safety", "risk": "High/Med/Low", "finding": "Safety protocols, Stop Work Authority, and environmental liability." }
+      { "area": "Indemnity", "risk": "High/Med/Low", "finding": "string" },
+      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "string" },
+      { "area": "HSE", "risk": "High/Med/Low", "finding": "string" }
   ],
   "operationalTable": [
-      { "area": "Scope of Work", "finding": "Details of the drilling campaign or service." },
-      { "area": "Key Equipment", "finding": "Primary vessel/rig or equipment specs." }
+      { "area": "Scope", "finding": "string" },
+      { "area": "Equipment", "finding": "string" }
   ],
-  "deepDive": "A comprehensive markdown report structured with headers (##). Include a section specifically analyzing the 'Hidden Risks' in the appendices."
+  "deepDive": "Markdown report."
 }
 """
+
+def generate_with_retry(model, prompt, file_obj):
+    """
+    The Retry Shield: Catches 429 Errors and waits before trying again.
+    """
+    max_retries = 3
+    base_delay = 5  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(
+                [prompt, file_obj],
+                generation_config={"response_mime_type": "application/json"}
+            )
+        except exceptions.ResourceExhausted:
+            # Hit the rate limit (429)
+            if attempt < max_retries - 1:
+                wait_time = base_delay * (2 ** attempt) # Exponential backoff: 5s, 10s, 20s
+                st.toast(f"⚠️ API Busy. Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                raise # Give up after 3 tries
+        except Exception as e:
+            raise e # Other errors crash immediately
 
 def process_file_cloud(uploaded_file, license_key):
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
@@ -238,16 +255,15 @@ def process_file_cloud(uploaded_file, license_key):
         with st.spinner("☁️ Uploading to Neural Engine..."):
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
             
+            # Wait for file processing
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        with st.spinner("🧠 Analyzing Contract (This may take 45s)..."):
+        with st.spinner("🧠 Analyzing (Auto-Retry Enabled)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
-            response = model.generate_content(
-                [MASTER_PROMPT, g_file],
-                generation_config={"response_mime_type": "application/json"}
-            )
+            # CALL THE RETRY FUNCTION
+            response = generate_with_retry(model, MASTER_PROMPT, g_file)
             
         os.remove(tmp_path)
         return response.text, None
