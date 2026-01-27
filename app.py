@@ -1,21 +1,17 @@
 import streamlit as st
 import google.generativeai as genai
-import PyPDF2
-import docx
-from io import StringIO
-import io
 import json
-import re
 import pandas as pd
 import os
 import requests
 import ast
-import gc
+import tempfile
+import time
+from fpdf import FPDF
 
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
-# 1. SERVER CONFIGURATION
 st.set_page_config(
     page_title="Strategic Contract Assessment", 
     layout="wide", 
@@ -23,16 +19,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. CONSTANTS
-ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "3.0.0 (Ultra-Stable)"
+# We use 1.5 Flash because it has the 1-Million Token Window stable for Files
+ACTIVE_MODEL = "gemini-1.5-flash"
+APP_VERSION = "4.0.0 (Cloud Direct Architecture)"
 
-# ⚡ SAFETY LIMITS (The "Crash Prevention" System)
-# We start with 30 pages. If this works, you can increase to 50.
-MAX_PAGES_TO_READ = 30  
-CHUNK_SIZE = 60000      # Characters per chunk
-
-# 3. API KEY
+# 1. API KEY
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
@@ -40,7 +31,7 @@ try:
 except:
     API_KEY = "MISSING_KEY"
 
-# 4. WEBHOOK
+# 2. WEBHOOK & GUMROAD
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
@@ -63,7 +54,7 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Cloud Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
 
@@ -92,188 +83,279 @@ def safe_get(data, path, default="N/A"):
         return data
     except: return default
 
-# ==========================================
-# 🧠 AI PROMPTS
-# ==========================================
-MAP_PROMPT = """
-Analyze this contract section. Text includes [=== PAGE X ===] markers. Cite them.
-Extract to JSON:
-{
-  "commercial_findings": [{"topic": "Price/Rate/Term", "details": "string", "citation": "Page X"}],
-  "legal_findings": [{"topic": "Indemnity/Liability", "risk": "High/Med/Low", "details": "string", "citation": "Page X"}],
-  "compliance_findings": [{"topic": "Local Content/Sanctions", "details": "string", "citation": "Page X"}]
-}
-"""
-
-REDUCE_PROMPT = """
-Merge findings into a Final Report.
-JSON Output:
-{
-  "riskScore": { "score": 0-100, "level": "High/Med/Low" },
-  "executiveSummary": "Bullet points with [Page X] citations.",
-  "commercials": { "value": "string", "duration": "string" },
-  "riskTable": [{ "area": "string", "risk": "High/Med/Low", "finding": "string" }],
-  "complianceTable": [{ "area": "string", "finding": "string" }],
-  "deepDive": "Markdown report."
-}
-"""
+def format_currency(value):
+    """Clean up messy money strings for the dashboard cards"""
+    if not isinstance(value, str): return str(value)
+    if len(value) > 20: return "See Report" # Don't break the UI
+    return value
 
 # ==========================================
-# 📄 PROCESSING ENGINE
+# 📄 PDF REPORT GENERATOR
 # ==========================================
-def process_file_optimized(uploaded_file):
-    """
-    Reads PDF page-by-page and discards memory immediately.
-    Stops exactly at MAX_PAGES_TO_READ.
-    """
-    text = ""
-    try:
-        if "pdf" in uploaded_file.type:
-            # Load file into stream
-            pdf_stream = io.BytesIO(uploaded_file.getvalue())
-            reader = PyPDF2.PdfReader(pdf_stream)
-            
-            # Hard limit calculation
-            limit = min(len(reader.pages), MAX_PAGES_TO_READ)
-            
-            for i in range(limit):
-                page = reader.pages[i]
-                text += f"\n\n[=== PAGE {i+1} ===]\n{page.extract_text()}"
-                
-                # Free memory per page
-                del page
-            
-            if len(reader.pages) > limit:
-                text += "\n\n[=== END OF ANALYSIS (CAP REACHED) ===]"
-                
-            # Cleanup
-            del reader
-            del pdf_stream
-            gc.collect()
-            return text
-            
-        else:
-            # Fallback for Word/Text
-            return StringIO(uploaded_file.getvalue().decode("utf-8", errors="ignore")).read()[:300000]
-            
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
+class StrategicReport(FPDF):
+    def header(self):
+        self.set_font('Helvetica', 'B', 10)
+        self.set_text_color(80, 80, 80)
+        self.cell(0, 10, f'CONFIDENTIAL // STRATEGIC ASSESSMENT // v{APP_VERSION}', 0, 1, 'L')
+        self.line(10, 20, 200, 20)
+        self.ln(10)
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.set_text_color(150, 150, 150)
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
-def analyze_contract(full_text, filename, file_size, license_key):
-    if not API_KEY or API_KEY == "MISSING_KEY": return None
-    log_usage(license_key, filename, file_size)
+def create_pdf(data):
+    pdf = StrategicReport()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
+    # Title
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(0, 0, 0)
+    title = safe_get(data, ['contractDetails', 'title'], 'Contract Analysis')
+    pdf.multi_cell(0, 8, str(title).encode('latin-1', 'replace').decode('latin-1'), 0, 'L')
+    pdf.ln(5)
+    
+    # Exec Summary
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "", 10)
+    summary = safe_get(data, ['executiveSummary'], 'No summary available.')
+    pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
+    pdf.ln(5)
+
+    # Risk Table
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 10, "2. KEY RISK VECTORS", 0, 1, 'L', fill=True)
+    pdf.ln(3)
+    risks = safe_get(data, ['riskTable'], [])
+    for item in risks:
+        pdf.set_font("Helvetica", "B", 10)
+        area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
+        risk_level = str(item.get('risk', '-')).encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
+        pdf.set_font("Helvetica", "", 10)
+        finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 6, finding)
+        pdf.ln(3)
+
+    return pdf.output(dest='S').encode('latin-1', 'replace')
+
+# ==========================================
+# 🧠 CLOUD ENGINE (NO LOCAL PROCESSING)
+# ==========================================
+
+MASTER_PROMPT = """
+You are a Senior Contract Analyst. I have uploaded a contract. 
+Scan the ENTIRE document from Page 1 to the final Appendix.
+
+Your Job: Extract critical Commercial, Legal, Operational, and Compliance data.
+
+CRITICAL INSTRUCTIONS:
+1. COMMERCIALS: Look for the "Schedule of Rates" or "Compensation" usually in the Appendices (Back of doc). Find the specific Daily Rates, Mob Fees, and Termination Fees.
+2. COMPLIANCE: Look for "Local Content" or "National Content" clauses (Namibia/Africa specific).
+3. OPERATIONS: Look for Technical Specs (Drillship specs, BOP rating).
+
+Output strictly valid JSON:
+{
+  "contractDetails": { "title": "string", "parties": ["string"] },
+  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "Short reason" },
+  "executiveSummary": "Bullet points highlighting value, major risks, and operational scope.",
+  "commercials": { 
+      "value": "Total Est. Value OR Day Rate (e.g. $350k/day)", 
+      "duration": "e.g. 2 Wells + 1 Option",
+      "terminationFee": "e.g. 50% of Day Rate"
+  },
+  "compliance": {
+      "entity": "string",
+      "sanctions": { "status": "Clean/Flagged", "details": "string" },
+      "localContent": "Summary of local hiring/purchasing requirements"
+  },
+  "riskTable": [
+      { "area": "Indemnity", "risk": "High/Med/Low", "finding": "Knock-for-knock details" },
+      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "Cap amount (e.g. $5M)" },
+      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "Waiver details" }
+  ],
+  "operationalTable": [
+      { "area": "Scope", "finding": "e.g. Drilling 2 wells in Block X" },
+      { "area": "Equipment", "finding": "e.g. Drillship DP3" }
+  ],
+  "deepDive": "Detailed Markdown report."
+}
+"""
+
+def process_file_cloud(uploaded_file, license_key):
+    """
+    Uploads file DIRECTLY to Google Gemini. 
+    Bypasses local parsing to prevent RAM crashes.
+    """
+    if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
+    
+    log_usage(license_key, uploaded_file.name, uploaded_file.size)
     genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    # Simple chunking
-    chunks = [full_text[i:i+CHUNK_SIZE] for i in range(0, len(full_text), CHUNK_SIZE)]
-    partial_results = []
-    
-    progress_bar = st.progress(0)
-    status = st.empty()
-    
-    # Map
-    for i, chunk in enumerate(chunks):
-        status.text(f"Scanning Section {i+1}/{len(chunks)}...")
-        progress_bar.progress((i / len(chunks)) * 0.8)
-        try:
-            response = model.generate_content(f"{MAP_PROMPT}\nDATA:\n{chunk}")
-            if extract_json(response.text):
-                partial_results.append(response.text)
-            del response
-            gc.collect()
-        except: pass
-        
-    # Reduce
-    status.text("Synthesizing Report...")
-    progress_bar.progress(0.9)
+    # 1. Save to Temp File (Low RAM usage)
     try:
-        combined = "\n".join(partial_results)[:500000] # Safety cap
-        final = model.generate_content(f"{REDUCE_PROMPT}\nDATA:\n{combined}")
-        progress_bar.progress(1.0)
-        return final.text
-    except: return None
+        suffix = ".pdf" if uploaded_file.type == "application/pdf" else ".docx"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+            
+        # 2. Upload to Google Cloud
+        with st.spinner("☁️ Uploading to Neural Engine (This takes 10s)..."):
+            g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
+            
+            # Wait for processing
+            while g_file.state.name == "PROCESSING":
+                time.sleep(2)
+                g_file = genai.get_file(g_file.name)
+                
+        # 3. Analyze
+        with st.spinner("🧠 Analyzing 100% of Document Context..."):
+            model = genai.GenerativeModel(ACTIVE_MODEL)
+            response = model.generate_content(
+                [MASTER_PROMPT, g_file],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            
+        # 4. Cleanup
+        os.remove(tmp_path)
+        # We don't delete from Google immediately to allow chat context, 
+        # but you can add g_file.delete() if privacy is strict.
+        
+        return response.text, None
+        
+    except Exception as e:
+        return None, str(e)
 
 # ==========================================
-# 🖥️ UI
+# 🖥️ UI (ENTERPRISE DASHBOARD)
 # ==========================================
 def main():
-    # Custom CSS for "Enterprise Look"
+    
     st.markdown("""
         <style>
-        .stApp { background-color: #f8fafc; }
-        .metric-box { background: white; padding: 15px; border-radius: 10px; border: 1px solid #e2e8f0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .metric-lbl { font-size: 0.8rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
-        .metric-val { font-size: 1.5rem; font-weight: 700; color: #0f172a; }
+        .stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
+        .metric-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
+        .metric-label { color: #64748b; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        .metric-value { color: #0f172a; font-size: 1.6rem; font-weight: 700; margin-top: 5px; }
         </style>
     """, unsafe_allow_html=True)
 
-    if 'auth' not in st.session_state: st.session_state.auth = False
+    if 'license_verified' not in st.session_state: st.session_state.license_verified = False
+    if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
     with st.sidebar:
-        st.title("🛡️ Contract AI")
-        st.caption(f"v{APP_VERSION}")
-        if not st.session_state.auth:
-            key = st.text_input("License Key", type="password")
-            if st.button("Login"):
-                valid, msg = check_gumroad_license(key)
+        st.title("🛡️ Secure Portal")
+        st.caption(f"System: {APP_VERSION}")
+        st.success("🟢 Cloud Link Active")
+        st.markdown("---")
+
+        if not st.session_state.license_verified:
+            st.warning("🔒 Authorization Required")
+            entered_key = st.text_input("License Key", type="password")
+            if st.button("Authenticate"):
+                valid, msg = check_gumroad_license(entered_key)
                 if valid:
-                    st.session_state.auth = True
-                    st.session_state.key = key
+                    st.session_state.license_verified = True
+                    st.session_state.license_key = entered_key
+                    st.success(msg)
                     st.rerun()
                 else: st.error(msg)
             st.stop()
-        
-        if st.button("Logout"):
-            st.session_state.auth = False
-            st.rerun()
-            
-        uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
+        else:
+            if st.button("End Session"):
+                st.session_state.license_verified = False
+                st.rerun()
+            st.markdown("---")
 
-    st.title("Strategic Contract Assessment")
+        uploaded_file = st.file_uploader("Upload Agreement", type=["pdf", "docx", "txt"])
+
+    st.markdown("## Strategic Contract Assessment")
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
+    st.markdown("---")
 
     if uploaded_file:
-        if st.button("Run Analysis"):
-            with st.spinner("Processing..."):
-                text = process_file_optimized(uploaded_file)
-                if text and len(text) > 100:
-                    raw_res = analyze_contract(text, uploaded_file.name, uploaded_file.size, st.session_state.key)
-                    if raw_res:
-                        data = extract_json(raw_res)
-                        if data: st.session_state.data = data
-                        else: st.error("AI Output Error. Please try again.")
-                    else: st.error("Analysis Timeout.")
-                else: st.error("Could not read file text.")
+        if st.button("Initialize Enterprise Analysis"):
+            
+            raw_response, error = process_file_cloud(uploaded_file, st.session_state.license_key)
+            
+            if raw_response:
+                data_dict = extract_json(raw_response)
+                if data_dict:
+                    st.session_state.analysis = data_dict
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Structure Parse Warning: Switching to Raw View")
+                    st.session_state.analysis = {"riskScore": {"score": 0}, "executiveSummary": raw_response}
+                    st.rerun()
+            else: st.error(f"Processing Failed: {error}")
 
-    if 'data' in st.session_state:
-        data = st.session_state.data
+    if "analysis" in st.session_state:
+        data = st.session_state.analysis
         
-        # Metrics
-        c1, c2, c3 = st.columns(3)
+        # HERO METRICS
+        c1, c2, c3, c4 = st.columns(4)
         score = safe_get(data, ['riskScore', 'score'], 0)
-        col = "#10b981" if int(score) < 40 else "#ef4444"
+        level = safe_get(data, ['riskScore', 'level'], 'Unknown')
         
-        with c1: st.markdown(f"<div class='metric-box'><div class='metric-lbl'>Risk Score</div><div class='metric-val' style='color:{col}'>{score}/100</div></div>", unsafe_allow_html=True)
-        with c2: st.markdown(f"<div class='metric-box'><div class='metric-lbl'>Value</div><div class='metric-val'>{str(safe_get(data, ['commercials', 'value']))[:15]}</div></div>", unsafe_allow_html=True)
-        with c3: st.markdown(f"<div class='metric-box'><div class='metric-lbl'>Duration</div><div class='metric-val'>{str(safe_get(data, ['commercials', 'duration']))[:15]}</div></div>", unsafe_allow_html=True)
+        # Formatting to prevent UI overflow
+        comm_val = format_currency(safe_get(data, ['commercials', 'value'], "N/A"))
+        comm_dur = format_currency(safe_get(data, ['commercials', 'duration'], "N/A"))
         
+        color = "#10b981" # Green
+        if int(score) > 75: color = "#ef4444" # Red
+        elif int(score) > 40: color = "#f59e0b" # Orange
+        
+        with c1: st.markdown(f"<div class='metric-card'><div class='metric-label'>Risk Score</div><div class='metric-value' style='color: {color};'>{score}/100</div><small>{level}</small></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Value / Rate</div><div class='metric-value' style='font-size: 1.4rem;'>{comm_val}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Duration</div><div class='metric-value' style='font-size: 1.4rem;'>{comm_dur}</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.4rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
+
         st.markdown("---")
         
-        t1, t2, t3, t4 = st.tabs(["📄 Executive Summary", "⚖️ Legal Risks", "🚩 Compliance", "📝 Deep Dive"])
+        # TABS
+        t1, t2, t3, t4, t5 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⚙️ Ops", "🚩 Compliance"])
         
-        with t1: st.markdown(safe_get(data, ['executiveSummary']))
-        
+        with t1:
+            st.subheader("Executive Synthesis")
+            st.markdown(safe_get(data, ['executiveSummary']))
+            st.divider()
+            pdf_bytes = create_pdf(data)
+            st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
+
         with t2:
-            risks = safe_get(data, ['riskTable'], [])
-            if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True)
-            
+            st.subheader("Commercial Terms")
+            comm_data = safe_get(data, ['commercials'], {})
+            if isinstance(comm_data, dict):
+                for k, v in comm_data.items():
+                    st.markdown(f"**{k.capitalize()}:** {v}")
+            else:
+                st.markdown(comm_data)
+
         with t3:
-            comp = safe_get(data, ['complianceTable'], [])
-            if comp: st.dataframe(pd.DataFrame(comp), use_container_width=True)
-            
-        with t4: st.markdown(safe_get(data, ['deepDive']))
+            st.subheader("Legal Risk Vectors")
+            risks = safe_get(data, ['riskTable'], [])
+            if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
+            else: st.info("No significant legal risks detected.")
+
+        with t4:
+            st.subheader("Operational & Technical Specs")
+            ops = safe_get(data, ['operationalTable'], [])
+            if ops: st.dataframe(pd.DataFrame(ops), use_container_width=True, hide_index=True)
+            else: st.info("No critical operational constraints found.")
+
+        with t5:
+            st.subheader("Compliance & Regulatory")
+            comp = safe_get(data, ['compliance'], {})
+            if isinstance(comp, dict):
+                for k, v in comp.items():
+                    if isinstance(v, dict): st.write(f"**{k}:**", v) # Handle nested dicts like sanctions
+                    else: st.markdown(f"**{k.capitalize()}:** {v}")
+            else: st.markdown(comp)
 
 if __name__ == "__main__":
     main()
