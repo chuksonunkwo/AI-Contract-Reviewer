@@ -8,6 +8,7 @@ import ast
 import tempfile
 import time
 from fpdf import FPDF
+import re
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -19,9 +20,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Switched back to Gemini 2.0 as requested
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "4.1.0 (Gemini 2.0 Cloud Direct)"
+APP_VERSION = "4.2.0 (Enhanced Intelligence)"
 
 # 1. API KEY
 try:
@@ -59,20 +59,37 @@ def log_usage(license_key, filename, file_size):
     except: pass
 
 def repair_json(json_str):
-    json_str = re.sub(r"```[a-zA-Z]*", "", json_str).replace("```", "").strip()
-    return json_str + ']' * (json_str.count('[') - json_str.count(']')) + '}' * (json_str.count('{') - json_str.count('}'))
+    # Remove markdown code blocks
+    json_str = re.sub(r"```json", "", json_str)
+    json_str = re.sub(r"```", "", json_str)
+    json_str = json_str.strip()
+    
+    # Attempt to fix truncated JSON
+    open_braces = json_str.count('{')
+    close_braces = json_str.count('}')
+    open_brackets = json_str.count('[')
+    close_brackets = json_str.count(']')
+    
+    json_str += ']' * (open_brackets - close_brackets)
+    json_str += '}' * (open_braces - close_braces)
+    
+    return json_str
 
 def extract_json(text):
     try:
-        text = re.sub(r"```[a-zA-Z]*", "", text).replace("```", "")
-        start, end = text.find('{'), text.rfind('}') + 1
-        if start == -1: return None
-        json_str = text[start:] if end <= start else text[start:end]
-        try: return json.loads(json_str)
-        except: 
-            try: return json.loads(repair_json(json_str))
-            except: return ast.literal_eval(json_str)
-    except: return None
+        # First, try to find the JSON block
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        else:
+            json_str = text
+
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        try:
+            return json.loads(repair_json(json_str))
+        except:
+            return None
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -84,9 +101,8 @@ def safe_get(data, path, default="N/A"):
     except: return default
 
 def format_currency(value):
-    """Clean up messy money strings for the dashboard cards"""
     if not isinstance(value, str): return str(value)
-    if len(value) > 20: return "See Report" 
+    if len(value) > 25: return "See Report" 
     return value
 
 # ==========================================
@@ -145,85 +161,94 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (NO LOCAL PROCESSING)
+# 🧠 CLOUD ENGINE (ENHANCED PROMPTS)
 # ==========================================
 
 MASTER_PROMPT = """
-You are a Senior Contract Analyst. I have uploaded a contract file. 
+You are a Senior Legal Counsel & Commercial Analyst in the Oil & Gas sector.
+I have uploaded a complex drilling/service contract.
 Scan the ENTIRE document from Page 1 to the final Appendix.
 
-Your Job: Extract critical Commercial, Legal, Operational, and Compliance data.
+Your Goal: Provide a "Board-Level" Strategic Risk Assessment.
 
-CRITICAL INSTRUCTIONS:
-1. COMMERCIALS: Look for the "Schedule of Rates" or "Compensation" usually in the Appendices (Back of doc). Find the specific Daily Rates, Mob Fees, and Termination Fees.
-2. COMPLIANCE: Look for "Local Content" or "National Content" clauses (Namibia/Africa specific).
-3. OPERATIONS: Look for Technical Specs (Drillship specs, BOP rating).
+CRITICAL EXTRACTION RULES:
+1. COMMERCIALS: Search the Appendices for the "Schedule of Rates" or "Compensation".
+   - Extract the specific Base Day Rate (e.g. $250,000/day).
+   - Extract Mobilization/Demobilization Fees.
+   - Extract Early Termination Fees (e.g. "50% of day rate").
+   *If exact numbers are redacted, state "Redacted/TBD" but describe the mechanism.*
 
-Output strictly valid JSON:
+2. LEGAL RISKS (The "Killer Clauses"):
+   - INDEMNITY: Is it "Knock-for-Knock"? (Good). Or is the Contractor liable for Company negligence? (Bad).
+   - LIABILITY CAP: What is the cap? (e.g. "100% of Contract Price" or "$5M").
+   - CONSEQUENTIAL LOSS: Is there a mutual waiver? (Standard). Or is it missing? (High Risk).
+
+3. COMPLIANCE & HSE:
+   - HSE: Are there specific "Stop Work Authority" or "Zero Tolerance" clauses?
+   - LOCAL CONTENT: (Crucial for Africa/Namibia). What are the hiring quotas or local spend requirements?
+   - SANCTIONS: Are there strict US/EU sanctions warranties?
+
+4. OPERATIONAL SCOPE:
+   - What vessel/rig is named? (e.g. "Deepwater Titan").
+   - What is the firm duration vs option periods?
+
+OUTPUT FORMAT:
+Return strictly valid JSON. Do not write markdown text outside the JSON.
+
 {
   "contractDetails": { "title": "string", "parties": ["string"] },
-  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "Short reason" },
-  "executiveSummary": "Bullet points highlighting value, major risks, and operational scope.",
+  "riskScore": { "score": 0-100, "level": "High/Medium/Low", "rationale": "One sentence explaining the score" },
+  "executiveSummary": "A dense, high-value summary of the deal structure, primary risks, and strategic value. Use bullet points.",
   "commercials": { 
-      "value": "Total Est. Value OR Day Rate (e.g. $350k/day)", 
-      "duration": "e.g. 2 Wells + 1 Option",
-      "terminationFee": "e.g. 50% of Day Rate"
+      "value": "The Day Rate or Total Value (e.g. $370k/day)", 
+      "duration": "Firm Term + Options (e.g. 2 Wells + 1 Option)",
+      "terminationFee": "Specific formula (e.g. 70% of Rate)"
   },
   "compliance": {
-      "entity": "string",
-      "sanctions": { "status": "Clean/Flagged", "details": "string" },
-      "localContent": "Summary of local hiring/purchasing requirements"
+      "entity": "Contractor Name",
+      "sanctions": { "status": "Clean/Flagged", "details": "Summary of sanctions clause" },
+      "localContent": "Details of local hiring/purchasing obligations"
   },
   "riskTable": [
-      { "area": "Indemnity", "risk": "High/Med/Low", "finding": "Knock-for-knock details" },
-      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "Cap amount (e.g. $5M)" },
-      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "Waiver details" }
+      { "area": "Indemnity Regime", "risk": "High/Med/Low", "finding": "Detail the knock-for-knock status and any carve-outs." },
+      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "Specific cap amount and exclusions (e.g. Gross Negligence)." },
+      { "area": "HSE & Safety", "risk": "High/Med/Low", "finding": "Safety protocols, Stop Work Authority, and environmental liability." }
   ],
   "operationalTable": [
-      { "area": "Scope", "finding": "e.g. Drilling 2 wells in Block X" },
-      { "area": "Equipment", "finding": "e.g. Drillship DP3" }
+      { "area": "Scope of Work", "finding": "Details of the drilling campaign or service." },
+      { "area": "Key Equipment", "finding": "Primary vessel/rig or equipment specs." }
   ],
-  "deepDive": "Detailed Markdown report."
+  "deepDive": "A comprehensive markdown report structured with headers (##). Include a section specifically analyzing the 'Hidden Risks' in the appendices."
 }
 """
 
 def process_file_cloud(uploaded_file, license_key):
-    """
-    Uploads file DIRECTLY to Google Gemini. 
-    Bypasses local parsing to prevent RAM crashes.
-    """
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
     
     log_usage(license_key, uploaded_file.name, uploaded_file.size)
     genai.configure(api_key=API_KEY)
     
-    # 1. Save to Temp File (Low RAM usage)
     try:
         suffix = ".pdf" if uploaded_file.type == "application/pdf" else ".docx"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
             
-        # 2. Upload to Google Cloud
-        with st.spinner("☁️ Uploading to Neural Engine (This takes 10s)..."):
+        with st.spinner("☁️ Uploading to Neural Engine..."):
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
             
-            # Wait for processing
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        # 3. Analyze
-        with st.spinner("🧠 Analyzing 100% of Document Context..."):
+        with st.spinner("🧠 Analyzing Contract (This may take 45s)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
             response = model.generate_content(
                 [MASTER_PROMPT, g_file],
                 generation_config={"response_mime_type": "application/json"}
             )
             
-        # 4. Cleanup
         os.remove(tmp_path)
-        
         return response.text, None
         
     except Exception as e:
@@ -300,7 +325,6 @@ def main():
         score = safe_get(data, ['riskScore', 'score'], 0)
         level = safe_get(data, ['riskScore', 'level'], 'Unknown')
         
-        # Formatting to prevent UI overflow
         comm_val = format_currency(safe_get(data, ['commercials', 'value'], "N/A"))
         comm_dur = format_currency(safe_get(data, ['commercials', 'duration'], "N/A"))
         
@@ -316,7 +340,7 @@ def main():
         st.markdown("---")
         
         # TABS
-        t1, t2, t3, t4, t5 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⚙️ Ops", "🚩 Compliance"])
+        t1, t2, t3, t4, t5 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal & HSE", "⚙️ Ops", "🚩 Compliance"])
         
         with t1:
             st.subheader("Executive Synthesis")
@@ -335,10 +359,10 @@ def main():
                 st.markdown(comm_data)
 
         with t3:
-            st.subheader("Legal Risk Vectors")
+            st.subheader("Legal & HSE Risks")
             risks = safe_get(data, ['riskTable'], [])
             if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
-            else: st.info("No significant legal risks detected.")
+            else: st.info("No significant risks detected.")
 
         with t4:
             st.subheader("Operational & Technical Specs")
@@ -351,7 +375,7 @@ def main():
             comp = safe_get(data, ['compliance'], {})
             if isinstance(comp, dict):
                 for k, v in comp.items():
-                    if isinstance(v, dict): st.write(f"**{k}:**", v) # Handle nested dicts like sanctions
+                    if isinstance(v, dict): st.write(f"**{k}:**", v) 
                     else: st.markdown(f"**{k.capitalize()}:** {v}")
             else: st.markdown(comp)
 
