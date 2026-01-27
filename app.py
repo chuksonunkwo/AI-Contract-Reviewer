@@ -20,8 +20,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "4.2.0 (Enhanced Intelligence)"
+# ⚡ CORE ENGINE: Switched to Production Stable to fix 429 Errors
+ACTIVE_MODEL = "gemini-1.5-flash"
+APP_VERSION = "4.3.0 (Production Stable)"
 
 # 1. API KEY
 try:
