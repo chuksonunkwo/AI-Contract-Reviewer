@@ -13,6 +13,7 @@ import os
 import requests
 import ast
 import gc
+import io  # CRITICAL: Required for memory optimization
 
 # ==========================================
 # ⚙️ CONFIGURATION & SECRETS
@@ -26,12 +27,10 @@ st.set_page_config(
 )
 
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.0.0 (Stable Release)"
+APP_VERSION = "2.3.0 (Razor Memory Edition)"
 
 # ⚡ SAFETY VALVE: Prevents Server Crashes
-# We limit analysis to the first 50 pages. 
-# This captures the Master Agreement & Key Risks while skipping 
-# heavy technical appendices that kill the 512MB Server RAM.
+# We limit analysis to the first 50 pages to keep RAM usage flat.
 MAX_PAGES_TO_READ = 50  
 
 # Tuning the "Chunking Engine"
@@ -306,33 +305,45 @@ COACH_INSTRUCTION = "You are a Negotiation Coach. Explain the risk, draft a redl
 
 def process_file_with_markers(uploaded_file):
     """
-    SAFETY VALVE: Reads file but stops after MAX_PAGES_TO_READ.
-    This prevents the server from crashing on large files.
+    MEMORY OPTIMIZED VERSION:
+    Reads page by page, extracting text, and deleting the object immediately 
+    to keep RAM usage flat.
     """
     text = ""
     try:
         if "pdf" in uploaded_file.type:
-            reader = PyPDF2.PdfReader(uploaded_file)
-            # Enforce the Page Cap
-            pages_to_read = min(len(reader.pages), MAX_PAGES_TO_READ)
+            # 1. Open the file wrapper using IO
+            pdf_file = io.BytesIO(uploaded_file.getvalue())
+            reader = PyPDF2.PdfReader(pdf_file)
             
+            # 2. Determine limits
+            num_pages = len(reader.pages)
+            pages_to_read = min(num_pages, MAX_PAGES_TO_READ)
+            
+            # 3. The "Razor" Loop
             for i in range(pages_to_read):
-                page_content = reader.pages[i].extract_text()
-                if page_content:
-                    text += f"\n\n[=== PAGE {i+1} ===]\n{page_content}"
+                page = reader.pages[i]
+                content = page.extract_text()
+                if content:
+                    text += f"\n\n[=== PAGE {i+1} ===]\n{content}"
+                
+                # 4. AGGRESSIVE MEMORY CLEANUP
+                del page      # Delete the page object
+                del content   # Delete the text string
+                if i % 5 == 0: # Force garbage collection every 5 pages
+                    gc.collect()
             
-            # If file was cut short, add a marker
-            if len(reader.pages) > MAX_PAGES_TO_READ:
-                text += "\n\n[=== DOCUMENT TRUNCATED FOR STABILITY ===]"
+            # 5. Final Cleanup
+            if num_pages > MAX_PAGES_TO_READ:
+                text += "\n\n[=== TRUNCATED FOR STABILITY ===]"
             
-            # CLEAR MEMORY IMMEDIATELY
-            reader = None 
+            del reader
+            del pdf_file
             gc.collect()
             return text
-            
+
         elif "word" in uploaded_file.type:
             doc = docx.Document(uploaded_file)
-            # Word Doc Safety Cap (approx 1000 paragraphs ~ 50 pages)
             max_paras = 1000
             for i, para in enumerate(doc.paragraphs):
                 if i >= max_paras: break
@@ -343,9 +354,11 @@ def process_file_with_markers(uploaded_file):
             return text
             
         elif "text" in uploaded_file.type:
-            return StringIO(uploaded_file.getvalue().decode("utf-8")).read()[:300000] # Cap text files too
+            return StringIO(uploaded_file.getvalue().decode("utf-8")).read()[:300000]
             
-    except: return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
     return None
 
 def analyze_contract_map_reduce(full_text, filename, file_size, license_key):
