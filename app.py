@@ -19,9 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Gemini 2.0 Flash (Experimental)
+# ⚡ CORE ENGINE
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "6.0.0 (Schema Enforced Engine)"
+APP_VERSION = "6.1.0 (Schema Stable)"
 
 # 1. API KEY
 try:
@@ -36,89 +36,45 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧱 THE SCHEMA (THE STRUCTURE ENFORCER)
+# 🧱 THE SCHEMA (DEFINED AS TEXT FOR PROMPT)
 # ==========================================
-# This matches your TypeScript Interface logic.
-CONTRACT_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "contract_details": {
-            "type": "OBJECT",
-            "properties": {
-                "title": {"type": "STRING"},
-                "parties": {"type": "ARRAY", "items": {"type": "STRING"}}
-            },
-            "required": ["title", "parties"]
-        },
-        "risk_score": {
-            "type": "OBJECT",
-            "properties": {
-                "score": {"type": "INTEGER"},
-                "level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
-                "rationale": {"type": "STRING"}
-            },
-            "required": ["score", "level", "rationale"]
-        },
-        "executive_summary": {
-            "type": "STRING",
-            "description": "A high-level strategic summary in bullet points."
-        },
-        "commercials": {
-            "type": "OBJECT",
-            "properties": {
-                "value_description": {"type": "STRING", "description": "The extracted Day Rate or Total Value"},
-                "duration": {"type": "STRING", "description": "Firm term plus option periods"},
-                "termination_fee": {"type": "STRING", "description": "Formula for early termination"}
-            },
-            "required": ["value_description", "duration"]
-        },
-        "legal_risks": {
-            "type": "ARRAY",
-            "description": "Strictly contractual liabilities (Indemnity, Caps, Consequential Loss)",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "area": {"type": "STRING"},
-                    "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
-                    "finding": {"type": "STRING", "description": "The specific clause detail and citation."}
-                },
-                "required": ["area", "risk_level", "finding"]
-            }
-        },
-        "hse_risks": {
-            "type": "ARRAY",
-            "description": "Operational safety risks (Stop Work, Safety Cases, Environment)",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "area": {"type": "STRING"},
-                    "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
-                    "finding": {"type": "STRING"}
-                },
-                "required": ["area", "risk_level", "finding"]
-            }
-        },
-        "compliance": {
-            "type": "OBJECT",
-            "properties": {
-                "local_content": {"type": "STRING", "description": "Local hiring and spend quotas"},
-                "sanctions": {"type": "STRING", "description": "Sanctions clause details"}
-            }
-        },
-        "operational_scope": {
-            "type": "OBJECT",
-            "properties": {
-                "scope_summary": {"type": "STRING"},
-                "key_equipment": {"type": "STRING"}
-            }
-        },
-        "deep_dive_report": {
-            "type": "STRING",
-            "description": "Full markdown report"
-        }
-    },
-    "required": ["contract_details", "risk_score", "executive_summary", "commercials", "legal_risks", "hse_risks", "compliance", "operational_scope"]
+# We inject this directly into the prompt to guarantee structure 
+# without relying on SDK-specific schema parameters that might fail.
+
+SCHEMA_DEF = """
+{
+  "contract_details": {
+    "title": "string",
+    "parties": ["string"]
+  },
+  "risk_score": {
+    "score": 0-100,
+    "level": "High/Medium/Low",
+    "rationale": "string"
+  },
+  "executive_summary": "Markdown bullet points",
+  "commercials": {
+    "value_description": "Extracted Rate/Value",
+    "duration": "string",
+    "termination_fee": "string"
+  },
+  "legal_risks": [
+    { "area": "Indemnity/Liability", "risk_level": "High/Med/Low", "finding": "string" }
+  ],
+  "hse_risks": [
+    { "area": "Stop Work/Safety Case", "risk_level": "High/Med/Low", "finding": "string" }
+  ],
+  "compliance": {
+    "local_content": "string",
+    "sanctions": "string"
+  },
+  "operational_scope": {
+    "scope_summary": "string",
+    "key_equipment": "string"
+  },
+  "deep_dive_report": "Full Markdown report"
 }
+"""
 
 # ==========================================
 # 🛠️ UTILITIES
@@ -139,9 +95,26 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Schema Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
+
+def repair_json(json_str):
+    json_str = re.sub(r"```json", "", json_str)
+    json_str = re.sub(r"```", "", json_str)
+    json_str = json_str.strip()
+    return json_str
+
+def extract_json(text):
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        json_str = match.group(0) if match else text
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        try:
+            return json.loads(repair_json(json_str))
+        except:
+            return None
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -154,7 +127,7 @@ def safe_get(data, path, default="N/A"):
 
 def format_currency(value):
     if not isinstance(value, str): return str(value)
-    if len(value) > 30: return "See Report" 
+    if len(value) > 35: return "See Report" 
     return value
 
 # ==========================================
@@ -210,7 +183,7 @@ def create_pdf(data):
             pdf.ln(1)
     pdf.ln(5)
 
-    # Legal Risk Table
+    # Legal Risks
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "3. LEGAL RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -226,7 +199,7 @@ def create_pdf(data):
         pdf.ln(3)
     pdf.ln(5)
 
-    # HSE Table
+    # HSE Risks
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "4. HSE & SAFETY VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -244,34 +217,36 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (STRUCTURED MODE)
+# 🧠 CLOUD ENGINE (ROBUST PROMPT MODE)
 # ==========================================
 
-MASTER_PROMPT = """
+MASTER_PROMPT = f"""
 ACT AS A FORENSIC CONTRACT AUDITOR.
-Review this ENTIRE contract (including Appendices) and extract data to populate the required JSON schema.
+Review this ENTIRE contract (including Appendices).
 
-CRITICAL INSTRUCTIONS FOR SCHEMA POPULATION:
+You MUST output your analysis in this STRICT JSON FORMAT:
+{SCHEMA_DEF}
+
+CRITICAL EXTRACTION INSTRUCTIONS:
 
 1. **commercials**:
-   - `value_description`: Look for the "Schedule of Rates". Extract the Base Operating Rate (e.g. "$180k/day"). If variable, describe the mechanism clearly.
-   - `termination_fee`: Look for "Early Termination". Extract the math (e.g. "50% of Operating Rate for remaining term").
+   - `value_description`: Extract the Base Operating Rate (e.g. "$180k/day"). Look in the Pricing Appendix.
+   - `termination_fee`: Extract the calculation formula.
 
 2. **legal_risks** (STRICTLY CONTRACTUAL):
-   - Only include: Indemnities (Knock-for-knock status), Liability Caps (Exact $ amount), Consequential Loss Waivers, and Governing Law.
+   - Include: Indemnities (Knock-for-knock status), Liability Caps (Exact $ amount), Consequential Loss Waivers.
    - Do NOT put Safety items here.
 
 3. **hse_risks** (STRICTLY OPERATIONAL/SAFETY):
-   - Include: Stop Work Authority, Safety Case requirements, Bridging Documents, Environmental Liability, PPE, and Drug/Alcohol policies.
+   - Include: Stop Work Authority, Safety Case requirements, Environmental Liability, PPE.
 
 4. **compliance**:
-   - `local_content`: Look for "Namibian Content" or "Local Content". Extract specific % quotas.
+   - `local_content`: Look for "Namibian/Local Content" quotas.
 
 5. **deep_dive_report**:
-   - Write a detailed Markdown report. Use headers (##) and bold text.
-   - Analyze the "Hidden Risks" found in the Appendices.
+   - Create a detailed Markdown report with headers.
 
-Do not summarize generically. Be specific. Quote numbers and clauses.
+Ensure valid JSON output. No preamble.
 """
 
 def generate_with_retry(model, prompt, file_obj):
@@ -283,15 +258,14 @@ def generate_with_retry(model, prompt, file_obj):
             return model.generate_content(
                 [prompt, file_obj],
                 generation_config={
-                    "response_mime_type": "application/json", 
-                    "response_schema": CONTRACT_SCHEMA, # <--- THE MAGIC SAUCE
-                    "temperature": 0.0 # Force factual extraction
+                    "response_mime_type": "application/json",
+                    "temperature": 0.0
                 }
             )
         except exceptions.ResourceExhausted:
             if attempt < max_retries - 1:
                 wait_time = base_delay * (2 ** attempt)
-                st.toast(f"⚠️ API Busy. Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
+                st.toast(f"⚠️ API Busy. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
                 raise 
@@ -313,7 +287,6 @@ def process_file_cloud(uploaded_file, license_key):
         with st.spinner("☁️ Uploading to Neural Engine..."):
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
             
-            # Wait for file processing
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
@@ -323,7 +296,7 @@ def process_file_cloud(uploaded_file, license_key):
             response = generate_with_retry(model, MASTER_PROMPT, g_file)
             
         os.remove(tmp_path)
-        # Verify JSON validity
+        
         try:
             return json.loads(response.text), None
         except:
