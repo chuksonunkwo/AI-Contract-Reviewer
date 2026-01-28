@@ -1,10 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-import pandas as pd
 import os
 import requests
-import ast
 import tempfile
 import time
 from fpdf import FPDF
@@ -22,9 +20,8 @@ st.set_page_config(
 )
 
 # ⚡ CORE ENGINE: Gemini 2.0 Flash (Experimental)
-# We stick with this because it has the context window we need.
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "1.1.0 (Deep Scan Edition)"
+APP_VERSION = "2.0.0 (Schema Engine)"
 
 # 1. API KEY
 try:
@@ -37,6 +34,87 @@ except:
 # 2. WEBHOOK
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
+
+# ==========================================
+# 🧱 THE SCHEMA (THE STRUCTURE ENFORCER)
+# ==========================================
+# This acts like a database mold. The AI *must* fill these specific fields.
+
+CONTRACT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "contract_details": {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "STRING"},
+                "parties": {"type": "ARRAY", "items": {"type": "STRING"}}
+            }
+        },
+        "risk_score": {
+            "type": "OBJECT",
+            "properties": {
+                "score": {"type": "INTEGER"},
+                "level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
+                "rationale": {"type": "STRING"}
+            }
+        },
+        "executive_summary": {
+            "type": "STRING",
+            "description": "A high-level strategic summary in bullet points."
+        },
+        "commercials": {
+            "type": "OBJECT",
+            "properties": {
+                "value_description": {"type": "STRING", "description": "The extracted Day Rate or Total Value"},
+                "duration": {"type": "STRING", "description": "Firm term plus option periods"},
+                "termination_fee": {"type": "STRING", "description": "Formula for early termination"}
+            }
+        },
+        "legal_risks": {
+            "type": "ARRAY",
+            "description": "Strictly contractual liabilities (Indemnity, Caps, Consequential Loss)",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "area": {"type": "STRING"},
+                    "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
+                    "finding": {"type": "STRING", "description": "The specific clause detail and citation."}
+                }
+            }
+        },
+        "hse_risks": {
+            "type": "ARRAY",
+            "description": "Operational safety risks (Stop Work, Safety Cases, Environment)",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "area": {"type": "STRING"},
+                    "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
+                    "finding": {"type": "STRING"}
+                }
+            }
+        },
+        "compliance": {
+            "type": "OBJECT",
+            "properties": {
+                "local_content": {"type": "STRING", "description": "Local hiring and spend quotas"},
+                "sanctions": {"type": "STRING", "description": "Sanctions clause details"}
+            }
+        },
+        "operational_scope": {
+            "type": "OBJECT",
+            "properties": {
+                "scope_summary": {"type": "STRING"},
+                "key_equipment": {"type": "STRING"}
+            }
+        },
+        "deep_dive_report": {
+            "type": "STRING",
+            "description": "Full markdown report"
+        }
+    },
+    "required": ["contract_details", "risk_score", "executive_summary", "commercials", "legal_risks", "hse_risks", "compliance", "operational_scope"]
+}
 
 # ==========================================
 # 🛠️ UTILITIES
@@ -57,29 +135,9 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}` | Model: `{ACTIVE_MODEL}`"
+            "content": f"🚨 **Schema Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
-
-def repair_json(json_str):
-    json_str = re.sub(r"```json", "", json_str)
-    json_str = re.sub(r"```", "", json_str)
-    json_str = json_str.strip()
-    open_braces = json_str.count('{')
-    close_braces = json_str.count('}')
-    json_str += '}' * (open_braces - close_braces)
-    return json_str
-
-def extract_json(text):
-    try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        json_str = match.group(0) if match else text
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        try:
-            return json.loads(repair_json(json_str))
-        except:
-            return None
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -92,7 +150,7 @@ def safe_get(data, path, default="N/A"):
 
 def format_currency(value):
     if not isinstance(value, str): return str(value)
-    if len(value) > 25: return "See Report" 
+    if len(value) > 30: return "See Report" 
     return value
 
 # ==========================================
@@ -119,7 +177,7 @@ def create_pdf(data):
     # Title
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(0, 0, 0)
-    title = safe_get(data, ['contractDetails', 'title'], 'Contract Analysis')
+    title = safe_get(data, ['contract_details', 'title'], 'Contract Analysis')
     pdf.multi_cell(0, 8, str(title).encode('latin-1', 'replace').decode('latin-1'), 0, 'L')
     pdf.ln(5)
     
@@ -129,7 +187,7 @@ def create_pdf(data):
     pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 10)
-    summary = safe_get(data, ['executiveSummary'], 'No summary available.')
+    summary = safe_get(data, ['executive_summary'], 'No summary available.')
     pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
@@ -142,7 +200,7 @@ def create_pdf(data):
     if isinstance(comm, dict):
         for k, v in comm.items():
             pdf.set_font("Helvetica", "B", 10)
-            pdf.cell(50, 6, f"{k.capitalize()}:", 0, 0)
+            pdf.cell(50, 6, f"{k.capitalize().replace('_', ' ')}:", 0, 0)
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 6, str(v).encode('latin-1', 'replace').decode('latin-1'))
             pdf.ln(1)
@@ -152,11 +210,11 @@ def create_pdf(data):
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "3. LEGAL RISK VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
-    risks = safe_get(data, ['riskTable'], [])
+    risks = safe_get(data, ['legal_risks'], [])
     for item in risks:
         pdf.set_font("Helvetica", "B", 10)
         area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
-        risk_level = str(item.get('risk', '-')).encode('latin-1', 'replace').decode('latin-1')
+        risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
         pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
         pdf.set_font("Helvetica", "", 10)
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
@@ -168,11 +226,11 @@ def create_pdf(data):
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "4. HSE & SAFETY VECTORS", 0, 1, 'L', fill=True)
     pdf.ln(3)
-    hse = safe_get(data, ['hseTable'], [])
+    hse = safe_get(data, ['hse_risks'], [])
     for item in hse:
         pdf.set_font("Helvetica", "B", 10)
         area = str(item.get('area', 'HSE')).encode('latin-1', 'replace').decode('latin-1')
-        risk_level = str(item.get('risk', '-')).encode('latin-1', 'replace').decode('latin-1')
+        risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
         pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
         pdf.set_font("Helvetica", "", 10)
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
@@ -182,90 +240,59 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (FORENSIC PROMPT)
+# 🧠 CLOUD ENGINE (STRUCTURED MODE)
 # ==========================================
 
 MASTER_PROMPT = """
 ACT AS A FORENSIC CONTRACT AUDITOR.
-Your task is to review this ENTIRE 200+ page drilling/service contract.
-Do not summarize generic text. Hunt for specific liabilities, costs, and obligations.
+Review this ENTIRE contract (including Appendices) and extract data to populate the required JSON schema.
 
-### SECTION 1: COMMERCIAL FORENSICS (Look in Appendices/Exhibits)
-- **Base Rates:** Extract the specific daily rates (e.g., "Operating Rate: $150,000/day"). Do not just say "As per Appendix." Find the number.
-- **Hidden Fees:** Look for Mobilization, Demobilization, or "Meals/Accommodation" recharge rates.
-- **Escalation:** Is there a formula to increase rates? (e.g., "CPI + 2%").
+CRITICAL INSTRUCTIONS FOR SCHEMA POPULATION:
 
-### SECTION 2: LEGAL LIABILITIES (The "Killer Clauses")
-- **Indemnity Regime:** Is it strict Knock-for-Knock? Or is there a "Carve-out" for Gross Negligence? (Critical).
-- **Liability Cap:** What is the EXACT cap amount? (e.g., "100% of Annual Contract Value" or "$5,000,000").
-- **Consequential Loss:** Is the waiver mutual? If not, flag it as HIGH RISK.
+1. **commercials**:
+   - `value_description`: Look for the "Schedule of Rates". Extract the Base Operating Rate (e.g. "$180k/day"). If variable, describe the mechanism clearly.
+   - `termination_fee`: Look for "Early Termination". Extract the math (e.g. "50% of Operating Rate for remaining term").
 
-### SECTION 3: HSE & SAFETY (Operational Criticality)
-- **Bridging Document:** Is a Safety Case or Bridging Document required before start?
-- **Stop Work:** Does the Contractor have explicit "Stop Work Authority" without penalty?
-- **Zero Tolerance:** Are there immediate termination rights for safety breaches (Alcohol/Drugs)?
+2. **legal_risks** (STRICTLY CONTRACTUAL):
+   - Only include: Indemnities (Knock-for-knock status), Liability Caps (Exact $ amount), Consequential Loss Waivers, and Governing Law.
+   - Do NOT put Safety items here.
 
-### SECTION 4: COMPLIANCE & LOCAL CONTENT (Namibia/Africa Focus)
-- **Quotas:** Are there hard numbers for local hiring? (e.g., "80% Angolan Nationals").
-- **Spend:** Is there a requirement to buy from local vendors?
+3. **hse_risks** (STRICTLY OPERATIONAL/SAFETY):
+   - Include: Stop Work Authority, Safety Case requirements, Bridging Documents, Environmental Liability, PPE, and Drug/Alcohol policies.
 
-### OUTPUT FORMAT (Strict JSON)
-Return ONLY valid JSON. If a value is not found, write "Not Explicitly Stated - Review Appendix".
+4. **compliance**:
+   - `local_content`: Look for "Namibian Content" or "Local Content". Extract specific % quotas.
 
-{
-  "contractDetails": { "title": "string", "parties": ["string"] },
-  "riskScore": { "score": 0-100, "level": "High/Med/Low", "rationale": "Forensic rationale based on extracted data." },
-  "executiveSummary": "High-level strategic summary of the deal structure and primary red flags. Use bullet points.",
-  "commercials": { 
-      "value": "Extract the specific Day Rate or Total Contract Value", 
-      "duration": "Firm Term + Option Periods (e.g., 2 Years + 1 Year Option)",
-      "terminationFee": "Specific formula (e.g., 70% of Operating Rate)"
-  },
-  "compliance": {
-      "entity": "Contractor Entity Name",
-      "sanctions": { "status": "Clean/Flagged", "details": "Sanctions clause summary" },
-      "localContent": "Specific local hiring or spending quotas found"
-  },
-  "riskTable": [
-      { "area": "Indemnity Regime", "risk": "High/Med/Low", "finding": "Quote the specific indemnity structure (e.g., Art 12.1)." },
-      { "area": "Liability Cap", "risk": "High/Med/Low", "finding": "The specific monetary cap and any exclusions." },
-      { "area": "Consequential Loss", "risk": "High/Med/Low", "finding": "Status of the mutual waiver." }
-  ],
-  "hseTable": [
-      { "area": "Stop Work Authority", "risk": "High/Med/Low", "finding": "Details on right to stop work." },
-      { "area": "Safety Case/Bridging", "risk": "High/Med/Low", "finding": "Requirements for safety documentation." }
-  ],
-  "operationalTable": [
-      { "area": "Scope of Work", "finding": "Summary of the drilling/service campaign." },
-      { "area": "Key Equipment", "finding": "Primary vessel, rig, or equipment specifications." }
-  ],
-  "deepDive": "A comprehensive markdown report. Include a section called '## Hidden Risks in Appendices' where you analyze the back of the contract."
-}
+5. **deep_dive_report**:
+   - Write a detailed Markdown report. Use headers (##) and bold text.
+   - Analyze the "Hidden Risks" found in the Appendices.
+
+Do not summarize generically. Be specific. Quote numbers and clauses.
 """
 
 def generate_with_retry(model, prompt, file_obj):
-    """
-    The Retry Shield: Catches 429 Errors and waits before trying again.
-    """
     max_retries = 3
-    base_delay = 5  # seconds
+    base_delay = 5
 
     for attempt in range(max_retries):
         try:
             return model.generate_content(
                 [prompt, file_obj],
-                generation_config={"response_mime_type": "application/json"}
+                generation_config={
+                    "response_mime_type": "application/json", 
+                    "response_schema": CONTRACT_SCHEMA, # <--- THE MAGIC SAUCE
+                    "temperature": 0.0 # Force factual extraction
+                }
             )
         except exceptions.ResourceExhausted:
-            # Hit the rate limit (429)
             if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt) # Exponential backoff
+                wait_time = base_delay * (2 ** attempt)
                 st.toast(f"⚠️ API Busy. Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
-                raise # Give up after 3 tries
+                raise 
         except Exception as e:
-            raise e # Other errors crash immediately
+            raise e 
 
 def process_file_cloud(uploaded_file, license_key):
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
@@ -287,13 +314,16 @@ def process_file_cloud(uploaded_file, license_key):
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        with st.spinner("🧠 Forensic Scan in Progress (This takes ~60s)..."):
+        with st.spinner("🧠 Forensic Scan (Schema Mode)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
-            # CALL THE RETRY FUNCTION
             response = generate_with_retry(model, MASTER_PROMPT, g_file)
             
         os.remove(tmp_path)
-        return response.text, None
+        # Verify JSON validity
+        try:
+            return json.loads(response.text), None
+        except:
+            return None, "Failed to parse JSON response."
         
     except Exception as e:
         return None, str(e)
@@ -348,28 +378,23 @@ def main():
     if uploaded_file:
         if st.button("Initialize Enterprise Analysis"):
             
-            raw_response, error = process_file_cloud(uploaded_file, st.session_state.license_key)
+            data_dict, error = process_file_cloud(uploaded_file, st.session_state.license_key)
             
-            if raw_response:
-                data_dict = extract_json(raw_response)
-                if data_dict:
-                    st.session_state.analysis = data_dict
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Structure Parse Warning: Switching to Raw View")
-                    st.session_state.analysis = {"riskScore": {"score": 0}, "executiveSummary": raw_response}
-                    st.rerun()
-            else: st.error(f"Processing Failed: {error}")
+            if data_dict:
+                st.session_state.analysis = data_dict
+                st.rerun()
+            else: 
+                st.error(f"Processing Failed: {error}")
 
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         
         # HERO METRICS
         c1, c2, c3, c4 = st.columns(4)
-        score = safe_get(data, ['riskScore', 'score'], 0)
-        level = safe_get(data, ['riskScore', 'level'], 'Unknown')
+        score = safe_get(data, ['risk_score', 'score'], 0)
+        level = safe_get(data, ['risk_score', 'level'], 'Unknown')
         
-        comm_val = format_currency(safe_get(data, ['commercials', 'value'], "N/A"))
+        comm_val = format_currency(safe_get(data, ['commercials', 'value_description'], "N/A"))
         comm_dur = format_currency(safe_get(data, ['commercials', 'duration'], "N/A"))
         
         color = "#10b981" # Green
@@ -383,12 +408,12 @@ def main():
 
         st.markdown("---")
         
-        # TABS (NOW 6 TABS)
+        # TABS
         t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
         
         with t1:
             st.subheader("Executive Synthesis")
-            st.markdown(safe_get(data, ['executiveSummary']))
+            st.markdown(safe_get(data, ['executive_summary']))
             st.divider()
             pdf_bytes = create_pdf(data)
             st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
@@ -398,26 +423,28 @@ def main():
             comm_data = safe_get(data, ['commercials'], {})
             if isinstance(comm_data, dict):
                 for k, v in comm_data.items():
-                    st.markdown(f"**{k.capitalize()}:** {v}")
+                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
             else:
                 st.markdown(comm_data)
 
         with t3:
             st.subheader("Legal Risk Vectors (Contractual)")
-            risks = safe_get(data, ['riskTable'], [])
+            risks = safe_get(data, ['legal_risks'], [])
             if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
             else: st.info("No significant legal risks detected.")
 
         with t4:
             st.subheader("HSE & Safety Vectors")
-            hse = safe_get(data, ['hseTable'], [])
+            hse = safe_get(data, ['hse_risks'], [])
             if hse: st.dataframe(pd.DataFrame(hse), use_container_width=True, hide_index=True)
             else: st.info("No specific HSE flags detected.")
 
         with t5:
             st.subheader("Operational & Technical Specs")
-            ops = safe_get(data, ['operationalTable'], [])
-            if ops: st.dataframe(pd.DataFrame(ops), use_container_width=True, hide_index=True)
+            ops_scope = safe_get(data, ['operational_scope'], {})
+            if ops_scope:
+                st.write("**Scope Summary:**", ops_scope.get('scope_summary', 'N/A'))
+                st.write("**Key Equipment:**", ops_scope.get('key_equipment', 'N/A'))
             else: st.info("No critical operational constraints found.")
 
         with t6:
@@ -425,8 +452,7 @@ def main():
             comp = safe_get(data, ['compliance'], {})
             if isinstance(comp, dict):
                 for k, v in comp.items():
-                    if isinstance(v, dict): st.write(f"**{k}:**", v) 
-                    else: st.markdown(f"**{k.capitalize()}:** {v}")
+                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
             else: st.markdown(comp)
 
 if __name__ == "__main__":
