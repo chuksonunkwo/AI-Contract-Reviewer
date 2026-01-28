@@ -21,7 +21,7 @@ st.set_page_config(
 
 # ⚡ CORE ENGINE: Gemini 2.0 Flash (Experimental)
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "2.0.0 (Schema Engine)"
+APP_VERSION = "6.0.0 (Schema Enforced Engine)"
 
 # 1. API KEY
 try:
@@ -38,8 +38,7 @@ GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg=="
 # ==========================================
 # 🧱 THE SCHEMA (THE STRUCTURE ENFORCER)
 # ==========================================
-# This acts like a database mold. The AI *must* fill these specific fields.
-
+# This matches your TypeScript Interface logic.
 CONTRACT_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -48,7 +47,8 @@ CONTRACT_SCHEMA = {
             "properties": {
                 "title": {"type": "STRING"},
                 "parties": {"type": "ARRAY", "items": {"type": "STRING"}}
-            }
+            },
+            "required": ["title", "parties"]
         },
         "risk_score": {
             "type": "OBJECT",
@@ -56,7 +56,8 @@ CONTRACT_SCHEMA = {
                 "score": {"type": "INTEGER"},
                 "level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
                 "rationale": {"type": "STRING"}
-            }
+            },
+            "required": ["score", "level", "rationale"]
         },
         "executive_summary": {
             "type": "STRING",
@@ -68,7 +69,8 @@ CONTRACT_SCHEMA = {
                 "value_description": {"type": "STRING", "description": "The extracted Day Rate or Total Value"},
                 "duration": {"type": "STRING", "description": "Firm term plus option periods"},
                 "termination_fee": {"type": "STRING", "description": "Formula for early termination"}
-            }
+            },
+            "required": ["value_description", "duration"]
         },
         "legal_risks": {
             "type": "ARRAY",
@@ -79,7 +81,8 @@ CONTRACT_SCHEMA = {
                     "area": {"type": "STRING"},
                     "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
                     "finding": {"type": "STRING", "description": "The specific clause detail and citation."}
-                }
+                },
+                "required": ["area", "risk_level", "finding"]
             }
         },
         "hse_risks": {
@@ -91,7 +94,8 @@ CONTRACT_SCHEMA = {
                     "area": {"type": "STRING"},
                     "risk_level": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
                     "finding": {"type": "STRING"}
-                }
+                },
+                "required": ["area", "risk_level", "finding"]
             }
         },
         "compliance": {
