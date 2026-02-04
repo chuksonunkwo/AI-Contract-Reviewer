@@ -13,15 +13,15 @@ from google.api_core import exceptions
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Strategic Contract Assessment", 
+    page_title="Contract Sentinel AI", 
     layout="wide", 
-    page_icon="🛡️",
+    page_icon="⚖️",
     initial_sidebar_state="expanded"
 )
 
 # ⚡ CORE ENGINE
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "6.1.0 (Schema Stable)"
+APP_VERSION = "7.0.0 (Enterprise Gold)"
 
 # 1. API KEY
 try:
@@ -36,43 +36,54 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧱 THE SCHEMA (DEFINED AS TEXT FOR PROMPT)
+# 🧱 THE "VERBATIM" SCHEMA
 # ==========================================
-# We inject this directly into the prompt to guarantee structure 
-# without relying on SDK-specific schema parameters that might fail.
-
+# UPGRADE: Now asks for 'source_text' to prove the finding.
 SCHEMA_DEF = """
 {
   "contract_details": {
     "title": "string",
-    "parties": ["string"]
+    "parties": ["string"],
+    "governing_law": "string",
+    "effective_date": "string"
   },
   "risk_score": {
     "score": 0-100,
     "level": "High/Medium/Low",
     "rationale": "string"
   },
-  "executive_summary": "Markdown bullet points",
+  "executive_summary": "Markdown bullet points of key deal mechanics.",
   "commercials": {
     "value_description": "Extracted Rate/Value",
     "duration": "string",
-    "termination_fee": "string"
+    "termination_fee": "string",
+    "payment_terms": "string"
   },
   "legal_risks": [
-    { "area": "Indemnity/Liability", "risk_level": "High/Med/Low", "finding": "string" }
+    { 
+      "area": "Indemnity/Liability/Waiver", 
+      "risk_level": "High/Med/Low", 
+      "finding": "Summary of the risk", 
+      "source_text": "Exact quote from contract (e.g. 'Article 12.1...')" 
+    }
   ],
   "hse_risks": [
-    { "area": "Stop Work/Safety Case", "risk_level": "High/Med/Low", "finding": "string" }
+    { 
+      "area": "Stop Work/Safety Case/Environment", 
+      "risk_level": "High/Med/Low", 
+      "finding": "Summary of the risk",
+      "source_text": "Exact quote from contract" 
+    }
   ],
   "compliance": {
     "local_content": "string",
-    "sanctions": "string"
+    "sanctions": "string",
+    "data_privacy": "string"
   },
   "operational_scope": {
     "scope_summary": "string",
     "key_equipment": "string"
-  },
-  "deep_dive_report": "Full Markdown report"
+  }
 }
 """
 
@@ -88,14 +99,14 @@ def check_gumroad_license(key):
         data = response.json()
         if not data.get("success"): return False, "❌ Invalid Key"
         if data.get("purchase", {}).get("refunded"): return False, "⛔ Refunded"
-        return True, "✅ Active"
+        return True, "✅ Access Granted"
     except: return False, "Connection Error"
 
 def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚀 **Enterprise Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
 
@@ -131,7 +142,7 @@ def format_currency(value):
     return value
 
 # ==========================================
-# 📄 PDF REPORT GENERATOR
+# 📄 PDF ENGINE
 # ==========================================
 class StrategicReport(FPDF):
     def header(self):
@@ -168,56 +179,38 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
-    # Commercials
+    # Risk Table
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "2. COMMERCIAL TERMS", 0, 1, 'L', fill=True)
+    pdf.cell(0, 10, "2. RISK & LIABILITY", 0, 1, 'L', fill=True)
     pdf.ln(3)
-    pdf.set_font("Helvetica", "", 10)
-    comm = safe_get(data, ['commercials'], {})
-    if isinstance(comm, dict):
-        for k, v in comm.items():
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.cell(50, 6, f"{k.capitalize().replace('_', ' ')}:", 0, 0)
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 6, str(v).encode('latin-1', 'replace').decode('latin-1'))
-            pdf.ln(1)
-    pdf.ln(5)
-
-    # Legal Risks
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "3. LEGAL RISK VECTORS", 0, 1, 'L', fill=True)
-    pdf.ln(3)
-    risks = safe_get(data, ['legal_risks'], [])
-    for item in risks:
+    
+    # Combine Legal & HSE for PDF
+    all_risks = safe_get(data, ['legal_risks'], []) + safe_get(data, ['hse_risks'], [])
+    
+    for item in all_risks:
         pdf.set_font("Helvetica", "B", 10)
         area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
         risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
         pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
+        
         pdf.set_font("Helvetica", "", 10)
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, finding)
-        pdf.ln(3)
-    pdf.ln(5)
-
-    # HSE Risks
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "4. HSE & SAFETY VECTORS", 0, 1, 'L', fill=True)
-    pdf.ln(3)
-    hse = safe_get(data, ['hse_risks'], [])
-    for item in hse:
-        pdf.set_font("Helvetica", "B", 10)
-        area = str(item.get('area', 'HSE')).encode('latin-1', 'replace').decode('latin-1')
-        risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
-        pdf.set_font("Helvetica", "", 10)
-        finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 6, finding)
+        
+        # Add Source Text in Italics (The receipt)
+        source = str(item.get('source_text', '')).encode('latin-1', 'replace').decode('latin-1')
+        if source and len(source) > 5:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_text_color(100, 100, 100)
+            pdf.multi_cell(0, 5, f"Source: {source}")
+            pdf.set_text_color(0, 0, 0)
+            
         pdf.ln(3)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (ROBUST PROMPT MODE)
+# 🧠 CLOUD ENGINE (FORENSIC MODE)
 # ==========================================
 
 MASTER_PROMPT = f"""
@@ -230,28 +223,29 @@ You MUST output your analysis in this STRICT JSON FORMAT:
 CRITICAL EXTRACTION INSTRUCTIONS:
 
 1. **commercials**:
-   - `value_description`: Extract the Base Operating Rate (e.g. "$180k/day"). Look in the Pricing Appendix.
-   - `termination_fee`: Extract the calculation formula.
+   - `value_description`: Extract Base Rates (e.g. "$180k/day"). Look in Appendices.
+   - `termination_fee`: Extract the formula (e.g. "70% of Rate").
 
 2. **legal_risks** (STRICTLY CONTRACTUAL):
-   - Include: Indemnities (Knock-for-knock status), Liability Caps (Exact $ amount), Consequential Loss Waivers.
-   - Do NOT put Safety items here.
+   - **Indemnity**: Is it Knock-for-Knock? Does it exclude Gross Negligence?
+   - **Liability Cap**: What is the hard number?
+   - **Consequential Loss**: Is the waiver mutual?
+   - *CRITICAL: You MUST quote the specific clause in `source_text`.*
 
-3. **hse_risks** (STRICTLY OPERATIONAL/SAFETY):
-   - Include: Stop Work Authority, Safety Case requirements, Environmental Liability, PPE.
+3. **hse_risks** (OPERATIONAL):
+   - Stop Work Authority, Safety Case, Pollution Liability.
+   - *CRITICAL: Quote the clause in `source_text`.*
 
 4. **compliance**:
-   - `local_content`: Look for "Namibian/Local Content" quotas.
+   - Local Content (Namibia/Africa quotas), Sanctions, Data Privacy (GDPR).
 
-5. **deep_dive_report**:
-   - Create a detailed Markdown report with headers.
-
-Ensure valid JSON output. No preamble.
+Do not summarize generically. Be specific.
 """
 
 def generate_with_retry(model, prompt, file_obj):
-    max_retries = 3
-    base_delay = 5
+    # AGGRESSIVE RETRY LOGIC (Prevents 429 Errors)
+    max_retries = 6 
+    base_delay = 10 # Start with 10s wait
 
     for attempt in range(max_retries):
         try:
@@ -259,13 +253,13 @@ def generate_with_retry(model, prompt, file_obj):
                 [prompt, file_obj],
                 generation_config={
                     "response_mime_type": "application/json",
-                    "temperature": 0.0
+                    "temperature": 0.0 # Zero creativity = Maximum accuracy
                 }
             )
         except exceptions.ResourceExhausted:
             if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt)
-                st.toast(f"⚠️ API Busy. Retrying in {wait_time}s...")
+                wait_time = base_delay * (2 ** attempt) # 10s, 20s, 40s...
+                st.toast(f"⏳ System Busy (Rate Limit). Auto-Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
                 raise 
@@ -284,14 +278,14 @@ def process_file_cloud(uploaded_file, license_key):
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
             
-        with st.spinner("☁️ Uploading to Neural Engine..."):
+        with st.spinner("☁️ Uploading to Secure Neural Engine..."):
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
             
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        with st.spinner("🧠 Forensic Scan (Schema Mode)..."):
+        with st.spinner("🧠 Forensic Analysis in Progress (Schema Enforcement Active)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
             response = generate_with_retry(model, MASTER_PROMPT, g_file)
             
@@ -310,12 +304,17 @@ def process_file_cloud(uploaded_file, license_key):
 # ==========================================
 def main():
     
+    # Premium CSS for "SaaS" Look
     st.markdown("""
         <style>
         .stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
         .metric-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
         .metric-label { color: #64748b; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
-        .metric-value { color: #0f172a; font-size: 1.6rem; font-weight: 700; margin-top: 5px; }
+        .metric-value { color: #0f172a; font-size: 1.5rem; font-weight: 700; margin-top: 5px; }
+        .risk-tag { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; color: white; display: inline-block;}
+        .risk-high { background-color: #ef4444; }
+        .risk-med { background-color: #f59e0b; }
+        .risk-low { background-color: #10b981; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -323,9 +322,9 @@ def main():
     if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
     with st.sidebar:
-        st.title("🛡️ Secure Portal")
+        st.title("⚖️ Contract Sentinel")
         st.caption(f"System: {APP_VERSION}")
-        st.success("🟢 Cloud Link Active")
+        st.success("🟢 System Online")
         st.markdown("---")
 
         if not st.session_state.license_verified:
@@ -346,14 +345,14 @@ def main():
                 st.rerun()
             st.markdown("---")
 
-        uploaded_file = st.file_uploader("Upload Agreement", type=["pdf", "docx", "txt"])
+        uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
 
     st.markdown("## Strategic Contract Assessment")
-    st.markdown("##### ⚡ Oil & Gas Specialist Edition")
+    st.markdown("##### ⚡ Enterprise Edition")
     st.markdown("---")
 
     if uploaded_file:
-        if st.button("Initialize Enterprise Analysis"):
+        if st.button("Run Forensic Analysis"):
             
             data_dict, error = process_file_cloud(uploaded_file, st.session_state.license_key)
             
@@ -366,31 +365,32 @@ def main():
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         
-        # HERO METRICS
+        # 1. HERO METRICS
         c1, c2, c3, c4 = st.columns(4)
         score = safe_get(data, ['risk_score', 'score'], 0)
         level = safe_get(data, ['risk_score', 'level'], 'Unknown')
         
         comm_val = format_currency(safe_get(data, ['commercials', 'value_description'], "N/A"))
-        comm_dur = format_currency(safe_get(data, ['commercials', 'duration'], "N/A"))
+        law = safe_get(data, ['contract_details', 'governing_law'], "N/A")
         
         color = "#10b981" # Green
         if int(score) > 75: color = "#ef4444" # Red
         elif int(score) > 40: color = "#f59e0b" # Orange
         
         with c1: st.markdown(f"<div class='metric-card'><div class='metric-label'>Risk Score</div><div class='metric-value' style='color: {color};'>{score}/100</div><small>{level}</small></div>", unsafe_allow_html=True)
-        with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Value / Rate</div><div class='metric-value' style='font-size: 1.4rem;'>{comm_val}</div></div>", unsafe_allow_html=True)
-        with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Duration</div><div class='metric-value' style='font-size: 1.4rem;'>{comm_dur}</div></div>", unsafe_allow_html=True)
-        with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.4rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Value / Rate</div><div class='metric-value' style='font-size: 1.2rem;'>{comm_val}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Governing Law</div><div class='metric-value' style='font-size: 1.0rem;'>{law[:20]}...</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.2rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
 
         st.markdown("---")
         
-        # TABS
+        # 2. TABS
         t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
         
         with t1:
             st.subheader("Executive Synthesis")
             st.markdown(safe_get(data, ['executive_summary']))
+            st.info(f"Rationale: {safe_get(data, ['risk_score', 'rationale'])}")
             st.divider()
             pdf_bytes = create_pdf(data)
             st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
@@ -401,19 +401,30 @@ def main():
             if isinstance(comm_data, dict):
                 for k, v in comm_data.items():
                     st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
-            else:
-                st.markdown(comm_data)
+            else: st.markdown(comm_data)
 
         with t3:
             st.subheader("Legal Risk Vectors (Contractual)")
             risks = safe_get(data, ['legal_risks'], [])
-            if risks: st.dataframe(pd.DataFrame(risks), use_container_width=True, hide_index=True)
+            if risks:
+                for r in risks:
+                    r_col = "risk-high" if r.get('risk_level') == 'High' else "risk-med" if r.get('risk_level') == 'Medium' else "risk-low"
+                    st.markdown(f"##### {r.get('area')} <span class='risk-tag {r_col}'>{r.get('risk_level')}</span>", unsafe_allow_html=True)
+                    st.write(r.get('finding'))
+                    st.caption(f"📝 Source: \"{r.get('source_text', 'N/A')}\"")
+                    st.divider()
             else: st.info("No significant legal risks detected.")
 
         with t4:
             st.subheader("HSE & Safety Vectors")
             hse = safe_get(data, ['hse_risks'], [])
-            if hse: st.dataframe(pd.DataFrame(hse), use_container_width=True, hide_index=True)
+            if hse:
+                for h in hse:
+                    r_col = "risk-high" if h.get('risk_level') == 'High' else "risk-med" if h.get('risk_level') == 'Medium' else "risk-low"
+                    st.markdown(f"##### {h.get('area')} <span class='risk-tag {r_col}'>{h.get('risk_level')}</span>", unsafe_allow_html=True)
+                    st.write(h.get('finding'))
+                    st.caption(f"📝 Source: \"{h.get('source_text', 'N/A')}\"")
+                    st.divider()
             else: st.info("No specific HSE flags detected.")
 
         with t5:
