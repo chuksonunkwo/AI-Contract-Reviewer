@@ -1,13 +1,24 @@
 import streamlit as st
-import google.generativeai as genai
-import json
 import os
-import requests
-import io
-from fpdf import FPDF
-import re
-from google.api_core import exceptions
 import time
+import json
+
+# ==========================================
+# 🔧 SYSTEM DIAGNOSTICS (PRE-FLIGHT CHECK)
+# ==========================================
+# We check imports BEFORE the app starts to prevent "White Screen of Death"
+try:
+    import google.generativeai as genai
+    from fpdf import FPDF
+    import PyPDF2
+    import requests
+    from google.api_core import exceptions
+    import io
+    IMPORTS_OK = True
+except ImportError as e:
+    st.error(f"❌ CRITICAL SYSTEM ERROR: Missing Library. {e}")
+    st.info("Please update your 'requirements.txt' file to include: PyPDF2, fpdf, google-generativeai")
+    st.stop()
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -20,7 +31,7 @@ st.set_page_config(
 )
 
 APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "10.0 (Debug & Stability)"
+APP_VERSION = "1.0 (Stable Enterprise)"
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
 
 # 1. API KEY
@@ -34,16 +45,6 @@ except:
 # 2. WEBHOOK
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
-
-# ==========================================
-# 📦 DEPENDENCY CHECKER
-# ==========================================
-# This prevents the "Silent Crash" if PyPDF2 is missing
-try:
-    import PyPDF2
-    PDF_LIB_AVAILABLE = True
-except ImportError:
-    PDF_LIB_AVAILABLE = False
 
 # ==========================================
 # 🧱 THE SCHEMA
@@ -68,29 +69,13 @@ SCHEMA_DEF = """
     "payment_terms": "string"
   },
   "legal_risks": [
-    { 
-      "area": "Indemnity/Liability", 
-      "risk_level": "High/Med/Low", 
-      "finding": "Summary", 
-      "source_text": "Quote" 
-    }
+    { "area": "Indemnity/Liability", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" }
   ],
   "hse_risks": [
-    { 
-      "area": "Safety/Environment", 
-      "risk_level": "High/Med/Low", 
-      "finding": "Summary", 
-      "source_text": "Quote" 
-    }
+    { "area": "Safety/Environment", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" }
   ],
-  "compliance": {
-    "local_content": "string",
-    "sanctions": "string"
-  },
-  "operational_scope": {
-    "scope_summary": "string",
-    "key_equipment": "string"
-  }
+  "compliance": { "local_content": "string", "sanctions": "string" },
+  "operational_scope": { "scope_summary": "string", "key_equipment": "string" }
 }
 """
 
@@ -109,30 +94,13 @@ def check_gumroad_license(key):
         return True, "✅ Access Granted"
     except: return False, "Connection Error"
 
-def log_usage(license_key, filename, file_size, mode="Surgical"):
+def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run ({mode}):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
-
-def repair_json(json_str):
-    json_str = re.sub(r"```json", "", json_str)
-    json_str = re.sub(r"```", "", json_str)
-    json_str = json_str.strip()
-    return json_str
-
-def extract_json(text):
-    try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        json_str = match.group(0) if match else text
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        try:
-            return json.loads(repair_json(json_str))
-        except:
-            return None
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -149,7 +117,7 @@ def format_currency(value):
     return value
 
 # ==========================================
-# 📄 PDF ENGINE
+# 📄 PDF GENERATOR
 # ==========================================
 class StrategicReport(FPDF):
     def header(self):
@@ -185,11 +153,10 @@ def create_pdf(data):
     pdf.ln(5)
 
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "2. RISK & LIABILITY", 0, 1, 'L', fill=True)
+    pdf.cell(0, 10, "2. RISK ASSESSMENT", 0, 1, 'L', fill=True)
     pdf.ln(3)
     
     all_risks = safe_get(data, ['legal_risks'], []) + safe_get(data, ['hse_risks'], [])
-    
     for item in all_risks:
         pdf.set_font("Helvetica", "B", 10)
         area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
@@ -203,49 +170,28 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 SURGICAL EXTRACTION ENGINE
+# 🧠 ENGINE
 # ==========================================
-
-MASTER_PROMPT = """
-ACT AS A FORENSIC CONTRACT AUDITOR.
-Review the provided contract text segments.
-
-You MUST output your analysis in this STRICT JSON FORMAT:
-""" + SCHEMA_DEF + """
-
-CRITICAL EXTRACTION INSTRUCTIONS:
-1. **commercials**: Look for rates, fees, and compensation.
-2. **legal_risks**: Indemnities, Liability Caps (search for "Limitation"), Consequential Loss.
-3. **hse_risks**: Stop Work, Safety Case.
-4. **compliance**: Local Content, Sanctions.
-
-Be specific. Quote source text.
-"""
 
 def extract_safe_text(uploaded_file):
     """
-    Extracts text but CAPS it at 50,000 characters to prevent API overload.
+    Reads PDF and truncates to 50k chars to prevent API overload.
     """
     try:
-        if not PDF_LIB_AVAILABLE:
-            return "ERROR_MISSING_LIB"
-            
         pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        
-        # Read pages until we hit 50k chars (Safe Zone for Free Tier)
-        char_limit = 50000
-        
-        for page in reader.pages:
-            chunk = page.extract_text()
-            if chunk:
-                text += chunk + "\n"
-            if len(text) > char_limit:
-                text += "\n... [TRUNCATED FOR SAFETY] ..."
-                break
-                
-        return text
+        # Safe Limit: First 20 pages + Last 10 pages
+        total_pages = len(reader.pages)
+        pages_to_read = list(range(min(20, total_pages))) 
+        if total_pages > 20:
+            pages_to_read += list(range(max(20, total_pages - 10), total_pages))
+            
+        for p in pages_to_read:
+            chunk = reader.pages[p].extract_text()
+            if chunk: text += chunk + "\n"
+            
+        return text[:50000] # Hard Cap
     except Exception as e:
         return f"ERROR_READING: {str(e)}"
 
@@ -261,39 +207,28 @@ def generate_with_retry(model, prompt, content):
         except exceptions.ResourceExhausted:
             time.sleep(base_delay * (2 ** attempt))
         except Exception as e:
-            # Raise other errors immediately
             raise e
     return None
 
-def process_contract_safe(uploaded_file, license_key):
-    if not API_KEY or API_KEY == "MISSING_KEY": 
-        return None, "API Key Missing. Check Secrets."
+def process_file(uploaded_file, license_key):
+    if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
     
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
-    
-    log_usage(license_key, uploaded_file.name, uploaded_file.size, "Safe-Text")
+    log_usage(license_key, uploaded_file.name, uploaded_file.size)
     
     with st.spinner("📄 Reading Document (Safe Mode)..."):
-        contract_text = extract_safe_text(uploaded_file)
+        text_content = extract_safe_text(uploaded_file)
+        if str(text_content).startswith("ERROR"): return None, text_content
         
-        if contract_text == "ERROR_MISSING_LIB":
-            return None, "CRITICAL: You must add 'PyPDF2' to your requirements.txt file on Render."
-        
-        if str(contract_text).startswith("ERROR_READING"):
-            return None, contract_text
-            
-        if len(contract_text) < 100:
-            return None, "Document appears empty or unreadable."
+    master_prompt = "ACT AS A CONTRACT AUDITOR. Output JSON: " + SCHEMA_DEF + "\n\nDOCUMENT TEXT:\n" + text_content
 
     try:
-        with st.spinner("🧠 Analyzing Risks (Safe Mode)..."):
-            response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{contract_text}")
-            
+        with st.spinner("🧠 Analyzing Risks..."):
+            response = generate_with_retry(model, master_prompt, "")
             if response and response.text:
                 return json.loads(response.text), None
-            else:
-                return None, "AI returned empty response."
+            return None, "AI returned empty response."
     except Exception as e:
         return None, f"AI Error: {str(e)}"
 
@@ -321,14 +256,7 @@ def main():
     with st.sidebar:
         st.title(f"⚖️ {APP_NAME}")
         st.caption(f"Version: {APP_VERSION}")
-        
-        # Dependency Status Indicator
-        if PDF_LIB_AVAILABLE:
-            st.success("🟢 System Online")
-        else:
-            st.error("🔴 Missing Dependencies")
-            st.warning("Action Required: Add `PyPDF2` to requirements.txt")
-            
+        st.success("🟢 System Online")
         st.markdown("---")
 
         if not st.session_state.license_verified:
@@ -355,18 +283,9 @@ def main():
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
 
-    # CRITICAL WARNING IF LIB MISSING
-    if not PDF_LIB_AVAILABLE:
-        st.error("⚠️ **CRITICAL ERROR:** The app is missing the `PyPDF2` library.")
-        st.info("To fix this, open your `requirements.txt` file on Render/GitHub and add this line:")
-        st.code("PyPDF2")
-        st.stop()
-
     if uploaded_file:
         if st.button("Run Forensic Analysis"):
-            
-            data_dict, error = process_contract_safe(uploaded_file, st.session_state.license_key)
-            
+            data_dict, error = process_file(uploaded_file, st.session_state.license_key)
             if data_dict:
                 st.session_state.analysis = data_dict
                 st.rerun()
