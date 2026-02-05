@@ -5,6 +5,34 @@ import json
 import traceback
 
 # ==========================================
+# 🛡️ UNBREAKABLE IMPORTS (Graceful Degradation)
+# ==========================================
+# We try to import libraries. If they fail, we disable that feature
+# instead of crashing the whole app.
+
+LIB_STATUS = {"google_genai": False, "fpdf": False, "pypdf2": False}
+
+try:
+    import google.generativeai as genai
+    from google.api_core import exceptions
+    LIB_STATUS["google_genai"] = True
+except ImportError:
+    pass
+
+try:
+    from fpdf import FPDF
+    LIB_STATUS["fpdf"] = True
+except ImportError:
+    pass
+
+try:
+    import PyPDF2
+    import io
+    LIB_STATUS["pypdf2"] = True
+except ImportError:
+    pass
+
+# ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
@@ -14,34 +42,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-APP_VERSION = "13.0 (Self-Diagnostic)"
-# WE USE THE SAFEST, MOST COMMON MODEL
+APP_NAME = "AI Contract Reviewer"
+APP_VERSION = "14.0 (Unbreakable)"
 ACTIVE_MODEL = "gemini-1.5-flash"
 
-# ==========================================
-# 🔧 SYSTEM DIAGNOSTICS (PRE-FLIGHT)
-# ==========================================
-SYSTEM_STATUS = {"lib": False, "key": False, "conn": False}
-
-try:
-    import google.generativeai as genai
-    from fpdf import FPDF
-    import PyPDF2
-    import requests
-    from google.api_core import exceptions
-    import io
-    SYSTEM_STATUS["lib"] = True
-except ImportError as e:
-    st.error(f"❌ CRITICAL ERROR: Library Missing. {e}")
-    st.stop()
-
-# 1. API KEY CHECK
+# 1. API KEY
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
         API_KEY = st.secrets["GEMINI_API_KEY"]
-    SYSTEM_STATUS["key"] = True
-    genai.configure(api_key=API_KEY)
 except:
     API_KEY = None
 
@@ -50,29 +59,12 @@ except:
 # ==========================================
 SCHEMA_DEF = """
 {
-  "contract_details": {
-    "title": "string",
-    "parties": ["string"],
-    "governing_law": "string"
-  },
-  "risk_score": {
-    "score": 0-100,
-    "level": "High/Medium/Low",
-    "rationale": "string"
-  },
+  "contract_details": { "title": "string", "parties": ["string"], "governing_law": "string" },
+  "risk_score": { "score": 0-100, "level": "High/Medium/Low", "rationale": "string" },
   "executive_summary": "Markdown bullet points.",
-  "commercials": {
-    "value_description": "Extracted Rate/Value",
-    "duration": "string",
-    "termination_fee": "string",
-    "payment_terms": "string"
-  },
-  "legal_risks": [
-    { "area": "Indemnity/Liability", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" }
-  ],
-  "hse_risks": [
-    { "area": "Safety/Environment", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" }
-  ],
+  "commercials": { "value_description": "Extracted Rate/Value", "duration": "string", "termination_fee": "string", "payment_terms": "string" },
+  "legal_risks": [ { "area": "Indemnity/Liability", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" } ],
+  "hse_risks": [ { "area": "Safety/Environment", "risk_level": "High/Med/Low", "finding": "Summary", "source_text": "Quote" } ],
   "compliance": { "local_content": "string", "sanctions": "string" },
   "operational_scope": { "scope_summary": "string", "key_equipment": "string" }
 }
@@ -81,8 +73,8 @@ SCHEMA_DEF = """
 # ==========================================
 # 🛠️ UTILITIES
 # ==========================================
-
 def repair_json(json_str):
+    import re
     json_str = re.sub(r"```json", "", json_str)
     json_str = re.sub(r"```", "", json_str)
     json_str = json_str.strip()
@@ -103,23 +95,13 @@ def format_currency(value):
     return value
 
 # ==========================================
-# 📄 PDF GENERATOR
+# 📄 PDF GENERATOR (Safe Mode)
 # ==========================================
-class StrategicReport(FPDF):
-    def header(self):
-        self.set_font('Helvetica', 'B', 10)
-        self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // CONTRACT SENTINEL // v{APP_VERSION}', 0, 1, 'L')
-        self.line(10, 20, 200, 20)
-        self.ln(10)
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Helvetica', 'I', 8)
-        self.set_text_color(150, 150, 150)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-
 def create_pdf(data):
-    pdf = StrategicReport()
+    if not LIB_STATUS["fpdf"]:
+        return None # Feature disabled if lib missing
+        
+    pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
@@ -129,20 +111,16 @@ def create_pdf(data):
     pdf.multi_cell(0, 8, str(title).encode('latin-1', 'replace').decode('latin-1'), 0, 'L')
     pdf.ln(5)
     
-    pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
+    pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L')
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 10)
     summary = safe_get(data, ['executive_summary'], 'No summary available.')
     pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "2. RISK ASSESSMENT", 0, 1, 'L', fill=True)
-    pdf.ln(3)
-    
-    all_risks = safe_get(data, ['legal_risks'], []) + safe_get(data, ['hse_risks'], [])
+    # Simplified risk list for PDF
+    all_risks = safe_get(data, ['legal_risks'], [])
     for item in all_risks:
         pdf.set_font("Helvetica", "B", 10)
         area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
@@ -156,19 +134,22 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 ENGINE
+# 🧠 ENGINE (With Fallbacks)
 # ==========================================
 
 def extract_safe_text(uploaded_file):
+    if not LIB_STATUS["pypdf2"]:
+        return "ERROR_MISSING_LIB"
+    
     try:
         pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        # Read first 20 pages + Last 20 pages (Surgical Extraction)
+        # Safe Limit: First 20 pages + Last 10 pages
         total_pages = len(reader.pages)
         pages_to_read = list(range(min(20, total_pages))) 
         if total_pages > 20:
-            pages_to_read += list(range(max(20, total_pages - 20), total_pages))
+            pages_to_read += list(range(max(20, total_pages - 10), total_pages))
             
         for p in pages_to_read:
             try:
@@ -176,51 +157,52 @@ def extract_safe_text(uploaded_file):
                 if chunk: text += chunk + "\n"
             except: pass
             
-        return text[:70000] # Safe Cap
+        return text[:60000] # Safe Cap
     except Exception as e:
         return f"ERROR_READING: {str(e)}"
 
-def generate_with_retry(model, prompt, content):
-    max_retries = 3
-    base_delay = 5
-    for attempt in range(max_retries):
-        try:
-            return model.generate_content(
-                [prompt, content],
-                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
-            )
-        except exceptions.ResourceExhausted:
-            time.sleep(base_delay * (2 ** attempt))
-        except Exception as e:
-            raise e
-    return None
-
-def process_file(uploaded_file, license_key):
+def process_file(uploaded_file):
     if not API_KEY: return None, "API Key Missing"
+    if not LIB_STATUS["google_genai"]: return None, "Google GenAI Library Missing"
     
     # 1. Text Extraction
+    text_content = ""
     with st.spinner("📄 Reading Document..."):
         text_content = extract_safe_text(uploaded_file)
-        if str(text_content).startswith("ERROR"): return None, text_content
+        
+        # Fallback if PyPDF2 is missing: Try basic decoding (works for .txt, fails for PDF)
+        if text_content == "ERROR_MISSING_LIB":
+            if uploaded_file.type == "text/plain":
+                text_content = str(uploaded_file.read(), "utf-8")
+            else:
+                return None, "❌ **Critical:** `PyPDF2` library is missing. Cannot read PDFs. Update requirements.txt."
+        elif str(text_content).startswith("ERROR"): 
+            return None, text_content
         
     master_prompt = "ACT AS A CONTRACT AUDITOR. Output JSON: " + SCHEMA_DEF + "\n\nDOCUMENT TEXT:\n" + text_content
 
     # 2. AI Analysis
     try:
+        genai.configure(api_key=API_KEY)
         model = genai.GenerativeModel(ACTIVE_MODEL)
+        
         with st.spinner(f"🧠 Analyzing with {ACTIVE_MODEL}..."):
-            response = generate_with_retry(model, master_prompt, "")
-            if response and response.text:
-                return json.loads(repair_json(response.text)), None
-            return None, "AI returned empty response."
+            # Simple retry loop
+            for attempt in range(3):
+                try:
+                    response = model.generate_content(
+                        master_prompt,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    if response and response.text:
+                        return json.loads(repair_json(response.text)), None
+                except Exception:
+                    time.sleep(2) # Wait and retry
+            
+            return None, "AI Service Busy (429) or Empty Response. Try again in 1 min."
+            
     except Exception as e:
-        # DETAILED ERROR REPORTING
-        error_msg = str(e)
-        if "404" in error_msg:
-            return None, f"Model Error: {ACTIVE_MODEL} not found. Check Google API region."
-        if "429" in error_msg:
-            return None, "Rate Limit: Too many requests. Wait 60s."
-        return None, f"System Error: {error_msg}"
+        return None, f"System Error: {str(e)}"
 
 # ==========================================
 # 🖥️ UI
@@ -240,25 +222,21 @@ def main():
         st.title(f"⚖️ Contract Sentinel")
         st.caption(f"Version: {APP_VERSION}")
         
-        st.markdown("### 🚦 System Status")
-        if SYSTEM_STATUS["lib"]: st.success("📚 Libraries: OK")
-        else: st.error("📚 Libraries: FAIL")
+        st.markdown("### 🚦 System Diagnostics")
+        if LIB_STATUS["google_genai"]: st.success("✅ AI Engine: Online")
+        else: st.error("❌ AI Engine: Missing (Update requirements.txt)")
         
-        if SYSTEM_STATUS["key"]: st.success("🔑 API Key: Found")
-        else: st.error("🔑 API Key: MISSING")
+        if LIB_STATUS["pypdf2"]: st.success("✅ PDF Reader: Online")
+        else: st.warning("⚠️ PDF Reader: Missing (Text files only)")
+        
+        if LIB_STATUS["fpdf"]: st.success("✅ PDF Writer: Online")
+        else: st.warning("⚠️ PDF Writer: Missing (Markdown only)")
+        
+        if API_KEY: st.success("✅ API Key: Active")
+        else: st.error("❌ API Key: Missing")
         
         st.markdown("---")
-        
-        # Test Connection Button
-        if st.button("Test AI Connection"):
-            try:
-                model = genai.GenerativeModel(ACTIVE_MODEL)
-                response = model.generate_content("Say 'System Operational'")
-                st.toast(f"✅ {response.text}")
-            except Exception as e:
-                st.error(f"Connection Failed: {e}")
-
-        uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
+        uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "txt"])
 
     st.markdown(f"## {APP_NAME}")
     st.markdown("##### ⚡ Enterprise Edition")
@@ -266,16 +244,20 @@ def main():
 
     if uploaded_file:
         if st.button("Run Forensic Analysis"):
-            data_dict, error = process_file(uploaded_file, "DEMO_USER")
-            if data_dict:
-                st.session_state.analysis = data_dict
-                st.rerun()
-            else: 
-                st.error(f"Processing Failed: {error}")
+            if not API_KEY:
+                st.error("Please configure your API Key in Settings.")
+            else:
+                data_dict, error = process_file(uploaded_file)
+                if data_dict:
+                    st.session_state.analysis = data_dict
+                    st.rerun()
+                else: 
+                    st.error(f"Processing Failed: {error}")
 
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         
+        # METRICS
         c1, c2, c3, c4 = st.columns(4)
         score = safe_get(data, ['risk_score', 'score'], 0)
         level = safe_get(data, ['risk_score', 'level'], 'Unknown')
@@ -298,10 +280,17 @@ def main():
         with t1:
             st.subheader("Executive Synthesis")
             st.markdown(safe_get(data, ['executive_summary']))
-            st.info(f"Rationale: {safe_get(data, ['risk_score', 'rationale'])}")
             st.divider()
-            pdf_bytes = create_pdf(data)
-            st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
+            
+            # Smart Download Button (Adapts to missing libraries)
+            if LIB_STATUS["fpdf"]:
+                pdf_bytes = create_pdf(data)
+                if pdf_bytes:
+                    st.download_button("📥 Download Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
+            else:
+                json_str = json.dumps(data, indent=2)
+                st.download_button("📥 Download Report (JSON)", json_str, "Assessment.json", "application/json")
+                st.caption("Note: PDF export disabled (Missing 'fpdf' library).")
 
         with t2:
             st.subheader("Commercial Terms")
