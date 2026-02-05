@@ -7,7 +7,7 @@ import io
 from fpdf import FPDF
 import re
 from google.api_core import exceptions
-import PyPDF2
+import time
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -19,11 +19,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE
-# We use 2.0 Flash because it is fast and smart, but we feed it text only.
-ACTIVE_MODEL = "gemini-2.0-flash-exp"
 APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "9.0 (Surgical Text Mode)"
+APP_VERSION = "10.0 (Debug & Stability)"
+ACTIVE_MODEL = "gemini-2.0-flash-exp"
 
 # 1. API KEY
 try:
@@ -36,6 +34,16 @@ except:
 # 2. WEBHOOK
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
+
+# ==========================================
+# 📦 DEPENDENCY CHECKER
+# ==========================================
+# This prevents the "Silent Crash" if PyPDF2 is missing
+try:
+    import PyPDF2
+    PDF_LIB_AVAILABLE = True
+except ImportError:
+    PDF_LIB_AVAILABLE = False
 
 # ==========================================
 # 🧱 THE SCHEMA
@@ -61,18 +69,18 @@ SCHEMA_DEF = """
   },
   "legal_risks": [
     { 
-      "area": "Indemnity/Liability/Waiver", 
+      "area": "Indemnity/Liability", 
       "risk_level": "High/Med/Low", 
-      "finding": "Summary of the risk", 
-      "source_text": "Exact quote from contract" 
+      "finding": "Summary", 
+      "source_text": "Quote" 
     }
   ],
   "hse_risks": [
     { 
-      "area": "Stop Work/Safety Case/Environment", 
+      "area": "Safety/Environment", 
       "risk_level": "High/Med/Low", 
-      "finding": "Summary of the risk", 
-      "source_text": "Exact quote from contract" 
+      "finding": "Summary", 
+      "source_text": "Quote" 
     }
   ],
   "compliance": {
@@ -161,14 +169,12 @@ def create_pdf(data):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Title
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(0, 0, 0)
     title = safe_get(data, ['contract_details', 'title'], 'Contract Analysis')
     pdf.multi_cell(0, 8, str(title).encode('latin-1', 'replace').decode('latin-1'), 0, 'L')
     pdf.ln(5)
     
-    # Exec Summary
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
@@ -178,7 +184,6 @@ def create_pdf(data):
     pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(5)
 
-    # Risk Table
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 10, "2. RISK & LIABILITY", 0, 1, 'L', fill=True)
     pdf.ln(3)
@@ -190,18 +195,9 @@ def create_pdf(data):
         area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
         risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
         pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
-        
         pdf.set_font("Helvetica", "", 10)
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, finding)
-        
-        source = str(item.get('source_text', '')).encode('latin-1', 'replace').decode('latin-1')
-        if source and len(source) > 5:
-            pdf.set_font("Helvetica", "I", 8)
-            pdf.set_text_color(100, 100, 100)
-            pdf.multi_cell(0, 5, f"Source: {source}")
-            pdf.set_text_color(0, 0, 0)
-            
         pdf.ln(3)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
@@ -212,61 +208,46 @@ def create_pdf(data):
 
 MASTER_PROMPT = """
 ACT AS A FORENSIC CONTRACT AUDITOR.
-Review the provided contract text. 
-Note: This text contains the First 40 pages (Terms) and Last 20 pages (Appendices) of the agreement.
+Review the provided contract text segments.
 
 You MUST output your analysis in this STRICT JSON FORMAT:
 """ + SCHEMA_DEF + """
 
 CRITICAL EXTRACTION INSTRUCTIONS:
-1. **commercials**: Look for "Schedule of Rates" or "Compensation" in the Appendices text.
-2. **legal_risks**: Indemnities, Liability Caps, Consequential Loss.
-3. **hse_risks**: Stop Work, Safety Case, Pollution.
+1. **commercials**: Look for rates, fees, and compensation.
+2. **legal_risks**: Indemnities, Liability Caps (search for "Limitation"), Consequential Loss.
+3. **hse_risks**: Stop Work, Safety Case.
 4. **compliance**: Local Content, Sanctions.
 
-Do not summarize generically. Be specific.
+Be specific. Quote source text.
 """
 
-def surgical_text_extraction(uploaded_file):
+def extract_safe_text(uploaded_file):
     """
-    Extracts only the critical parts of the PDF to save memory/tokens.
-    Reads: Page 0-40 (Legal) AND Last 20 Pages (Commercials).
+    Extracts text but CAPS it at 50,000 characters to prevent API overload.
     """
     try:
-        # 1. Read PDF from stream (Low Memory)
+        if not PDF_LIB_AVAILABLE:
+            return "ERROR_MISSING_LIB"
+            
         pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
-        num_pages = len(reader.pages)
         text = ""
         
-        # 2. Determine "Surgery" Zones
-        # Grab first 40 pages (Master Terms)
-        start_limit = min(40, num_pages)
+        # Read pages until we hit 50k chars (Safe Zone for Free Tier)
+        char_limit = 50000
         
-        # Grab last 20 pages (Price/Scope)
-        end_start = max(start_limit, num_pages - 20)
-        
-        # 3. Extract Head
-        for i in range(start_limit):
-            try:
-                page_text = reader.pages[i].extract_text()
-                if page_text: text += page_text + "\n"
-            except: pass
-            
-        # 4. Insert Marker if skipping
-        if end_start > start_limit:
-            text += "\n\n... [MIDDLE SECTION SKIPPED FOR PROCESSING EFFICIENCY] ...\n\n"
-            
-        # 5. Extract Tail
-        for i in range(end_start, num_pages):
-            try:
-                page_text = reader.pages[i].extract_text()
-                if page_text: text += page_text + "\n"
-            except: pass
-            
+        for page in reader.pages:
+            chunk = page.extract_text()
+            if chunk:
+                text += chunk + "\n"
+            if len(text) > char_limit:
+                text += "\n... [TRUNCATED FOR SAFETY] ..."
+                break
+                
         return text
     except Exception as e:
-        return None
+        return f"ERROR_READING: {str(e)}"
 
 def generate_with_retry(model, prompt, content):
     max_retries = 3
@@ -280,35 +261,41 @@ def generate_with_retry(model, prompt, content):
         except exceptions.ResourceExhausted:
             time.sleep(base_delay * (2 ** attempt))
         except Exception as e:
+            # Raise other errors immediately
             raise e
     return None
 
-def process_contract_surgical(uploaded_file, license_key):
-    if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
+def process_contract_safe(uploaded_file, license_key):
+    if not API_KEY or API_KEY == "MISSING_KEY": 
+        return None, "API Key Missing. Check Secrets."
     
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    log_usage(license_key, uploaded_file.name, uploaded_file.size, "Surgical-Text")
+    log_usage(license_key, uploaded_file.name, uploaded_file.size, "Safe-Text")
     
-    with st.spinner("📄 Surgically Extracting Key Data (Legal + Pricing)..."):
-        # 1. Extract Text Locally (No Upload to Google)
-        contract_text = surgical_text_extraction(uploaded_file)
+    with st.spinner("📄 Reading Document (Safe Mode)..."):
+        contract_text = extract_safe_text(uploaded_file)
         
-        if not contract_text:
-            return None, "Failed to read document text."
+        if contract_text == "ERROR_MISSING_LIB":
+            return None, "CRITICAL: You must add 'PyPDF2' to your requirements.txt file on Render."
+        
+        if str(contract_text).startswith("ERROR_READING"):
+            return None, contract_text
             
-        # 2. Send Text to AI
-        try:
-            with st.spinner("🧠 Analyzing Contract Terms..."):
-                response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{contract_text}")
-                
-                if response and response.text:
-                    return json.loads(response.text), None
-                else:
-                    return None, "AI returned empty response."
-        except Exception as e:
-            return None, str(e)
+        if len(contract_text) < 100:
+            return None, "Document appears empty or unreadable."
+
+    try:
+        with st.spinner("🧠 Analyzing Risks (Safe Mode)..."):
+            response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{contract_text}")
+            
+            if response and response.text:
+                return json.loads(response.text), None
+            else:
+                return None, "AI returned empty response."
+    except Exception as e:
+        return None, f"AI Error: {str(e)}"
 
 # ==========================================
 # 🖥️ UI
@@ -334,7 +321,14 @@ def main():
     with st.sidebar:
         st.title(f"⚖️ {APP_NAME}")
         st.caption(f"Version: {APP_VERSION}")
-        st.success("🟢 System Online")
+        
+        # Dependency Status Indicator
+        if PDF_LIB_AVAILABLE:
+            st.success("🟢 System Online")
+        else:
+            st.error("🔴 Missing Dependencies")
+            st.warning("Action Required: Add `PyPDF2` to requirements.txt")
+            
         st.markdown("---")
 
         if not st.session_state.license_verified:
@@ -361,10 +355,17 @@ def main():
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
 
+    # CRITICAL WARNING IF LIB MISSING
+    if not PDF_LIB_AVAILABLE:
+        st.error("⚠️ **CRITICAL ERROR:** The app is missing the `PyPDF2` library.")
+        st.info("To fix this, open your `requirements.txt` file on Render/GitHub and add this line:")
+        st.code("PyPDF2")
+        st.stop()
+
     if uploaded_file:
         if st.button("Run Forensic Analysis"):
             
-            data_dict, error = process_contract_surgical(uploaded_file, st.session_state.license_key)
+            data_dict, error = process_contract_safe(uploaded_file, st.session_state.license_key)
             
             if data_dict:
                 st.session_state.analysis = data_dict
