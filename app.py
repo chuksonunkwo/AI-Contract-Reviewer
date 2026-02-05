@@ -2,21 +2,7 @@ import streamlit as st
 import os
 import time
 import json
-
-# ==========================================
-# 🔧 SYSTEM DIAGNOSTICS
-# ==========================================
-try:
-    import google.generativeai as genai
-    from fpdf import FPDF
-    import PyPDF2
-    import requests
-    from google.api_core import exceptions
-    import io
-except ImportError as e:
-    st.error(f"❌ CRITICAL ERROR: Missing Library. {e}")
-    st.info("Update 'requirements.txt' to include: PyPDF2, fpdf, google-generativeai")
-    st.stop()
+import traceback
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -28,23 +14,36 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "1.0 (Production Stable)"
-
-# ⚡ CORE ENGINE CHANGE: Switched to Stable 1.5 Flash
+APP_VERSION = "13.0 (Self-Diagnostic)"
+# WE USE THE SAFEST, MOST COMMON MODEL
 ACTIVE_MODEL = "gemini-1.5-flash"
 
-# 1. API KEY
+# ==========================================
+# 🔧 SYSTEM DIAGNOSTICS (PRE-FLIGHT)
+# ==========================================
+SYSTEM_STATUS = {"lib": False, "key": False, "conn": False}
+
+try:
+    import google.generativeai as genai
+    from fpdf import FPDF
+    import PyPDF2
+    import requests
+    from google.api_core import exceptions
+    import io
+    SYSTEM_STATUS["lib"] = True
+except ImportError as e:
+    st.error(f"❌ CRITICAL ERROR: Library Missing. {e}")
+    st.stop()
+
+# 1. API KEY CHECK
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
         API_KEY = st.secrets["GEMINI_API_KEY"]
+    SYSTEM_STATUS["key"] = True
+    genai.configure(api_key=API_KEY)
 except:
-    API_KEY = "MISSING_KEY"
-
-# 2. WEBHOOK
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
-GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
+    API_KEY = None
 
 # ==========================================
 # 🧱 THE SCHEMA
@@ -83,25 +82,6 @@ SCHEMA_DEF = """
 # 🛠️ UTILITIES
 # ==========================================
 
-def check_gumroad_license(key):
-    url = "https://api.gumroad.com/v2/licenses/verify"
-    params = {"product_id": GUMROAD_PRODUCT_ID, "license_key": key, "increment_uses_count": "false"}
-    try:
-        response = requests.post(url, data=params)
-        data = response.json()
-        if not data.get("success"): return False, "❌ Invalid Key"
-        if data.get("purchase", {}).get("refunded"): return False, "⛔ Refunded"
-        return True, "✅ Access Granted"
-    except: return False, "Connection Error"
-
-def log_usage(license_key, filename, file_size):
-    if not DISCORD_WEBHOOK: return
-    try:
-        requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run (1.5 Flash):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
-        })
-    except: pass
-
 def repair_json(json_str):
     json_str = re.sub(r"```json", "", json_str)
     json_str = re.sub(r"```", "", json_str)
@@ -129,7 +109,7 @@ class StrategicReport(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 10)
         self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // {APP_NAME} // v{APP_VERSION}', 0, 1, 'L')
+        self.cell(0, 10, f'CONFIDENTIAL // CONTRACT SENTINEL // v{APP_VERSION}', 0, 1, 'L')
         self.line(10, 20, 200, 20)
         self.ln(10)
     def footer(self):
@@ -184,11 +164,11 @@ def extract_safe_text(uploaded_file):
         pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        # Read first 25 pages + Last 15 pages (Surgical Extraction)
+        # Read first 20 pages + Last 20 pages (Surgical Extraction)
         total_pages = len(reader.pages)
-        pages_to_read = list(range(min(25, total_pages))) 
-        if total_pages > 25:
-            pages_to_read += list(range(max(25, total_pages - 15), total_pages))
+        pages_to_read = list(range(min(20, total_pages))) 
+        if total_pages > 20:
+            pages_to_read += list(range(max(20, total_pages - 20), total_pages))
             
         for p in pages_to_read:
             try:
@@ -196,7 +176,7 @@ def extract_safe_text(uploaded_file):
                 if chunk: text += chunk + "\n"
             except: pass
             
-        return text[:60000] # Safe Cap for 1.5 Flash
+        return text[:70000] # Safe Cap
     except Exception as e:
         return f"ERROR_READING: {str(e)}"
 
@@ -216,26 +196,31 @@ def generate_with_retry(model, prompt, content):
     return None
 
 def process_file(uploaded_file, license_key):
-    if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
+    if not API_KEY: return None, "API Key Missing"
     
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel(ACTIVE_MODEL)
-    log_usage(license_key, uploaded_file.name, uploaded_file.size)
-    
-    with st.spinner("📄 Reading Document (Surgical Mode)..."):
+    # 1. Text Extraction
+    with st.spinner("📄 Reading Document..."):
         text_content = extract_safe_text(uploaded_file)
         if str(text_content).startswith("ERROR"): return None, text_content
         
     master_prompt = "ACT AS A CONTRACT AUDITOR. Output JSON: " + SCHEMA_DEF + "\n\nDOCUMENT TEXT:\n" + text_content
 
+    # 2. AI Analysis
     try:
-        with st.spinner("🧠 Analyzing with Gemini 1.5 Flash..."):
+        model = genai.GenerativeModel(ACTIVE_MODEL)
+        with st.spinner(f"🧠 Analyzing with {ACTIVE_MODEL}..."):
             response = generate_with_retry(model, master_prompt, "")
             if response and response.text:
                 return json.loads(repair_json(response.text)), None
             return None, "AI returned empty response."
     except Exception as e:
-        return None, f"AI Error: {str(e)}"
+        # DETAILED ERROR REPORTING
+        error_msg = str(e)
+        if "404" in error_msg:
+            return None, f"Model Error: {ACTIVE_MODEL} not found. Check Google API region."
+        if "429" in error_msg:
+            return None, "Rate Limit: Too many requests. Wait 60s."
+        return None, f"System Error: {error_msg}"
 
 # ==========================================
 # 🖥️ UI
@@ -245,52 +230,43 @@ def main():
     st.markdown("""
         <style>
         .stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
-        .metric-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
-        .metric-label { color: #64748b; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        .metric-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; text-align: center; }
+        .metric-label { color: #64748b; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; }
         .metric-value { color: #0f172a; font-size: 1.5rem; font-weight: 700; margin-top: 5px; }
-        .risk-tag { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; color: white; display: inline-block;}
-        .risk-high { background-color: #ef4444; }
-        .risk-med { background-color: #f59e0b; }
-        .risk-low { background-color: #10b981; }
         </style>
     """, unsafe_allow_html=True)
 
-    if 'license_verified' not in st.session_state: st.session_state.license_verified = False
-    if 'license_key' not in st.session_state: st.session_state.license_key = ""
-
     with st.sidebar:
-        st.title(f"⚖️ {APP_NAME}")
+        st.title(f"⚖️ Contract Sentinel")
         st.caption(f"Version: {APP_VERSION}")
-        st.success("🟢 System Online")
+        
+        st.markdown("### 🚦 System Status")
+        if SYSTEM_STATUS["lib"]: st.success("📚 Libraries: OK")
+        else: st.error("📚 Libraries: FAIL")
+        
+        if SYSTEM_STATUS["key"]: st.success("🔑 API Key: Found")
+        else: st.error("🔑 API Key: MISSING")
+        
         st.markdown("---")
-
-        if not st.session_state.license_verified:
-            st.warning("🔒 Authorization Required")
-            entered_key = st.text_input("License Key", type="password")
-            if st.button("Authenticate"):
-                valid, msg = check_gumroad_license(entered_key)
-                if valid:
-                    st.session_state.license_verified = True
-                    st.session_state.license_key = entered_key
-                    st.success(msg)
-                    st.rerun()
-                else: st.error(msg)
-            st.stop()
-        else:
-            if st.button("End Session"):
-                st.session_state.license_verified = False
-                st.rerun()
-            st.markdown("---")
+        
+        # Test Connection Button
+        if st.button("Test AI Connection"):
+            try:
+                model = genai.GenerativeModel(ACTIVE_MODEL)
+                response = model.generate_content("Say 'System Operational'")
+                st.toast(f"✅ {response.text}")
+            except Exception as e:
+                st.error(f"Connection Failed: {e}")
 
         uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
 
     st.markdown(f"## {APP_NAME}")
-    st.markdown("##### ⚡ Oil & Gas Specialist Edition")
+    st.markdown("##### ⚡ Enterprise Edition")
     st.markdown("---")
 
     if uploaded_file:
         if st.button("Run Forensic Analysis"):
-            data_dict, error = process_file(uploaded_file, st.session_state.license_key)
+            data_dict, error = process_file(uploaded_file, "DEMO_USER")
             if data_dict:
                 st.session_state.analysis = data_dict
                 st.rerun()
@@ -306,13 +282,72 @@ def main():
         comm_val = format_currency(safe_get(data, ['commercials', 'value_description'], "N/A"))
         law = safe_get(data, ['contract_details', 'governing_law'], "N/A")
         
-        color = "#10b981" # Green
-        if int(score) > 75: color = "#ef4444" # Red
-        elif int(score) > 40: color = "#f59e0b" # Orange
+        color = "#10b981" 
+        if int(score) > 75: color = "#ef4444" 
+        elif int(score) > 40: color = "#f59e0b" 
         
         with c1: st.markdown(f"<div class='metric-card'><div class='metric-label'>Risk Score</div><div class='metric-value' style='color: {color};'>{score}/100</div><small>{level}</small></div>", unsafe_allow_html=True)
         with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Value / Rate</div><div class='metric-value' style='font-size: 1.2rem;'>{comm_val}</div></div>", unsafe_allow_html=True)
         with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Governing Law</div><div class='metric-value' style='font-size: 1.0rem;'>{law[:20]}...</div></div>", unsafe_allow_html=True)
         with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.2rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
 
-        st.markdown("---
+        st.markdown("---")
+        
+        t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
+        
+        with t1:
+            st.subheader("Executive Synthesis")
+            st.markdown(safe_get(data, ['executive_summary']))
+            st.info(f"Rationale: {safe_get(data, ['risk_score', 'rationale'])}")
+            st.divider()
+            pdf_bytes = create_pdf(data)
+            st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
+
+        with t2:
+            st.subheader("Commercial Terms")
+            comm_data = safe_get(data, ['commercials'], {})
+            if isinstance(comm_data, dict):
+                for k, v in comm_data.items():
+                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
+            else: st.markdown(comm_data)
+
+        with t3:
+            st.subheader("Legal Risk Vectors")
+            risks = safe_get(data, ['legal_risks'], [])
+            if risks:
+                for r in risks:
+                    st.markdown(f"##### {r.get('area')} - {r.get('risk_level')}")
+                    st.write(r.get('finding'))
+                    st.caption(f"📝 Source: \"{r.get('source_text', 'N/A')}\"")
+                    st.divider()
+            else: st.info("No significant legal risks detected.")
+
+        with t4:
+            st.subheader("HSE & Safety Vectors")
+            hse = safe_get(data, ['hse_risks'], [])
+            if hse:
+                for h in hse:
+                    st.markdown(f"##### {h.get('area')} - {h.get('risk_level')}")
+                    st.write(h.get('finding'))
+                    st.caption(f"📝 Source: \"{h.get('source_text', 'N/A')}\"")
+                    st.divider()
+            else: st.info("No specific HSE flags detected.")
+
+        with t5:
+            st.subheader("Operational & Technical Specs")
+            ops_scope = safe_get(data, ['operational_scope'], {})
+            if ops_scope:
+                st.write("**Scope Summary:**", ops_scope.get('scope_summary', 'N/A'))
+                st.write("**Key Equipment:**", ops_scope.get('key_equipment', 'N/A'))
+            else: st.info("No critical operational constraints found.")
+
+        with t6:
+            st.subheader("Compliance & Regulatory")
+            comp = safe_get(data, ['compliance'], {})
+            if isinstance(comp, dict):
+                for k, v in comp.items():
+                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
+            else: st.markdown(comp)
+
+if __name__ == "__main__":
+    main()
