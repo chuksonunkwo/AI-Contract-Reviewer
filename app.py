@@ -8,7 +8,8 @@ import time
 from fpdf import FPDF
 import re
 from google.api_core import exceptions
-import PyPDF2  # Re-added for "Lightweight" Fallback mode
+import PyPDF2
+import io
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -21,10 +22,9 @@ st.set_page_config(
 )
 
 # ⚡ CORE ENGINE
-# We keep 2.0 as primary, but we now have a text-based fallback that fits any model
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
 APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "1.0 (Stable Hybrid)"
+APP_VERSION = "1.0 (Stable Final)"
 
 # 1. API KEY
 try:
@@ -39,7 +39,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧱 THE SCHEMA (DATA STRUCTURE)
+# 🧱 THE SCHEMA
 # ==========================================
 SCHEMA_DEF = """
 {
@@ -184,7 +184,6 @@ def create_pdf(data):
     pdf.cell(0, 10, "2. RISK & LIABILITY", 0, 1, 'L', fill=True)
     pdf.ln(3)
     
-    # Combine Legal & HSE for PDF
     all_risks = safe_get(data, ['legal_risks'], []) + safe_get(data, ['hse_risks'], [])
     
     for item in all_risks:
@@ -197,7 +196,6 @@ def create_pdf(data):
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, finding)
         
-        # Source text
         source = str(item.get('source_text', '')).encode('latin-1', 'replace').decode('latin-1')
         if source and len(source) > 5:
             pdf.set_font("Helvetica", "I", 8)
@@ -210,69 +208,50 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 CLOUD ENGINE (HYBRID MODE)
+# 🧠 HYBRID ENGINE
 # ==========================================
 
 MASTER_PROMPT = """
 ACT AS A FORENSIC CONTRACT AUDITOR.
-Review this contract data.
-
 You MUST output your analysis in this STRICT JSON FORMAT:
 """ + SCHEMA_DEF + """
 
 CRITICAL EXTRACTION INSTRUCTIONS:
-
-1. **commercials**:
-   - `value_description`: Extract Base Rates (e.g. "$180k/day"). Look in Appendices.
-   - `termination_fee`: Extract the formula (e.g. "70% of Rate").
-
-2. **legal_risks** (STRICTLY CONTRACTUAL):
-   - **Indemnity**: Is it Knock-for-Knock? Does it exclude Gross Negligence?
-   - **Liability Cap**: What is the hard number?
-   - **Consequential Loss**: Is the waiver mutual?
-   - *CRITICAL: You MUST quote the specific clause in `source_text`.*
-
-3. **hse_risks** (OPERATIONAL):
-   - Stop Work Authority, Safety Case, Pollution Liability.
-   - *CRITICAL: Quote the clause in `source_text`.*
-
-4. **compliance**:
-   - Local Content (Namibia/Africa quotas), Sanctions, Data Privacy (GDPR).
+1. commercials: Value, Duration, Termination Fee.
+2. legal_risks: Indemnities, Liability Caps, Consequential Loss.
+3. hse_risks: Stop Work, Safety Case, Pollution.
+4. compliance: Local Content, Sanctions.
 
 Do not summarize generically. Be specific.
 """
 
 def extract_text_from_pdf(file_bytes):
-    """
-    Fallback method: Extracts raw text to bypass heavy file upload limits.
-    """
     try:
-        reader = PyPDF2.PdfReader(tempfile.SpooledTemporaryFile(max_size=10000000, mode='w+b'))
-        reader.stream.write(file_bytes)
-        reader.stream.seek(0)
-        
+        # Use simple extraction
+        pdf_file = io.BytesIO(file_bytes)
+        reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        # Cap at 100 pages to save RAM in fallback mode
-        for i in range(min(len(reader.pages), 100)):
-            text += reader.pages[i].extract_text() + "\n"
+        # Cap at 150 pages to prevent memory crash
+        for i in range(min(len(reader.pages), 150)):
+            page_text = reader.pages[i].extract_text()
+            if page_text: text += page_text + "\n"
         return text
-    except Exception as e:
-        return None
+    except: return None
 
-def generate_content_safe(model, contents):
-    """
-    Wrapper to handle API calls with simple retry
-    """
-    try:
-        return model.generate_content(
-            contents,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.0
-            }
-        )
-    except Exception as e:
-        raise e
+def generate_with_retry(model, prompt, content):
+    max_retries = 3
+    base_delay = 5
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(
+                [prompt, content],
+                generation_config={"response_mime_type": "application/json", "temperature": 0.0}
+            )
+        except exceptions.ResourceExhausted:
+            time.sleep(base_delay * (2 ** attempt))
+        except Exception as e:
+            raise e
+    return None
 
 def process_file_hybrid(uploaded_file, license_key):
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
@@ -280,52 +259,47 @@ def process_file_hybrid(uploaded_file, license_key):
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    # --- ATTEMPT 1: CLOUD DIRECT (High Quality) ---
+    # 1. ATTEMPT CLOUD UPLOAD (Best Quality)
     try:
-        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Cloud-HQ")
-        
-        with st.spinner("☁️  Uploading to Neural Engine (High Def)..."):
+        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Cloud")
+        with st.spinner("☁️  Uploading to Neural Engine..."):
             suffix = ".pdf" if uploaded_file.type == "application/pdf" else ".docx"
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
                 tmp_path = tmp_file.name
             
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
-            
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
             
-        with st.spinner("🧠 Analyzing Document Structure..."):
-            response = generate_content_safe(model, [MASTER_PROMPT, g_file])
+        with st.spinner("🧠 Analyzing..."):
+            response = generate_with_retry(model, MASTER_PROMPT, g_file)
             os.remove(tmp_path)
-            return json.loads(response.text), None
+            if response: return json.loads(response.text), None
 
-    except exceptions.ResourceExhausted:
-        st.warning("⚠️ High Traffic detected. Switching to Lightweight Text Mode...")
-    except Exception as e:
-        st.warning(f"⚠️ Standard upload failed ({str(e)}). Switching to Fallback Mode...")
+    except:
+        st.warning("⚠️ High Traffic Mode: Switching to Text Extraction...")
 
-    # --- ATTEMPT 2: TEXT FALLBACK (Low Bandwidth) ---
+    # 2. FALLBACK TO TEXT (Safe Mode)
     try:
-        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Text-Fallback")
-        
-        with st.spinner("📄 Extracting Raw Text (Fallback Mode)..."):
+        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Text-Safe")
+        with st.spinner("📄 Reading Text (Safe Mode)..."):
             raw_text = extract_text_from_pdf(uploaded_file.getvalue())
+            if not raw_text: return None, "Could not read text."
             
-            if not raw_text: return None, "Could not extract text from file."
+            # TRUNCATE TO SAFE LIMIT (150k chars = ~35k tokens) - PREVENTS 429
+            safe_text = raw_text[:150000]
             
-            # Truncate to safe limit (~80k tokens)
-            safe_text = raw_text[:300000] 
-            
-            response = generate_content_safe(model, [MASTER_PROMPT, f"CONTRACT TEXT:\n{safe_text}"])
-            return json.loads(response.text), None
+            response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{safe_text}")
+            if response: return json.loads(response.text), None
+            else: return None, "AI Busy. Try again in 1 min."
             
     except Exception as e:
-        return None, f"All extraction methods failed: {str(e)}"
+        return None, f"Error: {str(e)}"
 
 # ==========================================
-# 🖥️ UI (ENTERPRISE DASHBOARD)
+# 🖥️ UI
 # ==========================================
 def main():
     
@@ -389,11 +363,9 @@ def main():
     if "analysis" in st.session_state:
         data = st.session_state.analysis
         
-        # 1. HERO METRICS
         c1, c2, c3, c4 = st.columns(4)
         score = safe_get(data, ['risk_score', 'score'], 0)
         level = safe_get(data, ['risk_score', 'level'], 'Unknown')
-        
         comm_val = format_currency(safe_get(data, ['commercials', 'value_description'], "N/A"))
         law = safe_get(data, ['contract_details', 'governing_law'], "N/A")
         
@@ -408,7 +380,6 @@ def main():
 
         st.markdown("---")
         
-        # 2. TABS
         t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
         
         with t1:
@@ -428,7 +399,7 @@ def main():
             else: st.markdown(comm_data)
 
         with t3:
-            st.subheader("Legal Risk Vectors (Contractual)")
+            st.subheader("Legal Risk Vectors")
             risks = safe_get(data, ['legal_risks'], [])
             if risks:
                 for r in risks:
