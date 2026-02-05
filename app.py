@@ -22,6 +22,7 @@ st.set_page_config(
 # ⚡ CORE ENGINE
 # We use 2.0 Flash because it is fast and smart, but we feed it text only.
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
+APP_NAME = "AI Contract Reviewer"
 APP_VERSION = "9.0 (Surgical Text Mode)"
 
 # 1. API KEY
@@ -100,11 +101,11 @@ def check_gumroad_license(key):
         return True, "✅ Access Granted"
     except: return False, "Connection Error"
 
-def log_usage(license_key, filename, file_size):
+def log_usage(license_key, filename, file_size, mode="Surgical"):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run (Surgical):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run ({mode}):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
 
@@ -146,7 +147,7 @@ class StrategicReport(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 10)
         self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // AI CONTRACT REVIEW // v{APP_VERSION}', 0, 1, 'L')
+        self.cell(0, 10, f'CONFIDENTIAL // {APP_NAME} // v{APP_VERSION}', 0, 1, 'L')
         self.line(10, 20, 200, 20)
         self.ln(10)
     def footer(self):
@@ -247,7 +248,10 @@ def surgical_text_extraction(uploaded_file):
         
         # 3. Extract Head
         for i in range(start_limit):
-            text += reader.pages[i].extract_text() + "\n"
+            try:
+                page_text = reader.pages[i].extract_text()
+                if page_text: text += page_text + "\n"
+            except: pass
             
         # 4. Insert Marker if skipping
         if end_start > start_limit:
@@ -255,11 +259,13 @@ def surgical_text_extraction(uploaded_file):
             
         # 5. Extract Tail
         for i in range(end_start, num_pages):
-            text += reader.pages[i].extract_text() + "\n"
+            try:
+                page_text = reader.pages[i].extract_text()
+                if page_text: text += page_text + "\n"
+            except: pass
             
         return text
     except Exception as e:
-        st.error(f"Error reading PDF: {e}")
         return None
 
 def generate_with_retry(model, prompt, content):
@@ -326,7 +332,7 @@ def main():
     if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
     with st.sidebar:
-        st.title("⚖️ Contract Sentinel")
+        st.title(f"⚖️ {APP_NAME}")
         st.caption(f"Version: {APP_VERSION}")
         st.success("🟢 System Online")
         st.markdown("---")
@@ -351,7 +357,7 @@ def main():
 
         uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
 
-    st.markdown("## Strategic Contract Assessment")
+    st.markdown(f"## {APP_NAME}")
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
 
