@@ -3,13 +3,11 @@ import google.generativeai as genai
 import json
 import os
 import requests
-import tempfile
-import time
+import io
 from fpdf import FPDF
 import re
 from google.api_core import exceptions
 import PyPDF2
-import io
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -22,9 +20,9 @@ st.set_page_config(
 )
 
 # ⚡ CORE ENGINE
+# We use 2.0 Flash because it is fast and smart, but we feed it text only.
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "1.0 (Stable Final)"
+APP_VERSION = "9.0 (Surgical Text Mode)"
 
 # 1. API KEY
 try:
@@ -102,11 +100,11 @@ def check_gumroad_license(key):
         return True, "✅ Access Granted"
     except: return False, "Connection Error"
 
-def log_usage(license_key, filename, file_size, mode="Cloud"):
+def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run ({mode}):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run (Surgical):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
 
@@ -148,7 +146,7 @@ class StrategicReport(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 10)
         self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // {APP_NAME} // v{APP_VERSION}', 0, 1, 'L')
+        self.cell(0, 10, f'CONFIDENTIAL // AI CONTRACT REVIEW // v{APP_VERSION}', 0, 1, 'L')
         self.line(10, 20, 200, 20)
         self.ln(10)
     def footer(self):
@@ -208,35 +206,61 @@ def create_pdf(data):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
-# 🧠 HYBRID ENGINE
+# 🧠 SURGICAL EXTRACTION ENGINE
 # ==========================================
 
 MASTER_PROMPT = """
 ACT AS A FORENSIC CONTRACT AUDITOR.
+Review the provided contract text. 
+Note: This text contains the First 40 pages (Terms) and Last 20 pages (Appendices) of the agreement.
+
 You MUST output your analysis in this STRICT JSON FORMAT:
 """ + SCHEMA_DEF + """
 
 CRITICAL EXTRACTION INSTRUCTIONS:
-1. commercials: Value, Duration, Termination Fee.
-2. legal_risks: Indemnities, Liability Caps, Consequential Loss.
-3. hse_risks: Stop Work, Safety Case, Pollution.
-4. compliance: Local Content, Sanctions.
+1. **commercials**: Look for "Schedule of Rates" or "Compensation" in the Appendices text.
+2. **legal_risks**: Indemnities, Liability Caps, Consequential Loss.
+3. **hse_risks**: Stop Work, Safety Case, Pollution.
+4. **compliance**: Local Content, Sanctions.
 
 Do not summarize generically. Be specific.
 """
 
-def extract_text_from_pdf(file_bytes):
+def surgical_text_extraction(uploaded_file):
+    """
+    Extracts only the critical parts of the PDF to save memory/tokens.
+    Reads: Page 0-40 (Legal) AND Last 20 Pages (Commercials).
+    """
     try:
-        # Use simple extraction
-        pdf_file = io.BytesIO(file_bytes)
+        # 1. Read PDF from stream (Low Memory)
+        pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
+        num_pages = len(reader.pages)
         text = ""
-        # Cap at 150 pages to prevent memory crash
-        for i in range(min(len(reader.pages), 150)):
-            page_text = reader.pages[i].extract_text()
-            if page_text: text += page_text + "\n"
+        
+        # 2. Determine "Surgery" Zones
+        # Grab first 40 pages (Master Terms)
+        start_limit = min(40, num_pages)
+        
+        # Grab last 20 pages (Price/Scope)
+        end_start = max(start_limit, num_pages - 20)
+        
+        # 3. Extract Head
+        for i in range(start_limit):
+            text += reader.pages[i].extract_text() + "\n"
+            
+        # 4. Insert Marker if skipping
+        if end_start > start_limit:
+            text += "\n\n... [MIDDLE SECTION SKIPPED FOR PROCESSING EFFICIENCY] ...\n\n"
+            
+        # 5. Extract Tail
+        for i in range(end_start, num_pages):
+            text += reader.pages[i].extract_text() + "\n"
+            
         return text
-    except: return None
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+        return None
 
 def generate_with_retry(model, prompt, content):
     max_retries = 3
@@ -253,50 +277,32 @@ def generate_with_retry(model, prompt, content):
             raise e
     return None
 
-def process_file_hybrid(uploaded_file, license_key):
+def process_contract_surgical(uploaded_file, license_key):
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
     
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    # 1. ATTEMPT CLOUD UPLOAD (Best Quality)
-    try:
-        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Cloud")
-        with st.spinner("☁️  Uploading to Neural Engine..."):
-            suffix = ".pdf" if uploaded_file.type == "application/pdf" else ".docx"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
+    log_usage(license_key, uploaded_file.name, uploaded_file.size, "Surgical-Text")
+    
+    with st.spinner("📄 Surgically Extracting Key Data (Legal + Pricing)..."):
+        # 1. Extract Text Locally (No Upload to Google)
+        contract_text = surgical_text_extraction(uploaded_file)
+        
+        if not contract_text:
+            return None, "Failed to read document text."
             
-            g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
-            while g_file.state.name == "PROCESSING":
-                time.sleep(2)
-                g_file = genai.get_file(g_file.name)
-            
-        with st.spinner("🧠 Analyzing..."):
-            response = generate_with_retry(model, MASTER_PROMPT, g_file)
-            os.remove(tmp_path)
-            if response: return json.loads(response.text), None
-
-    except:
-        st.warning("⚠️ High Traffic Mode: Switching to Text Extraction...")
-
-    # 2. FALLBACK TO TEXT (Safe Mode)
-    try:
-        log_usage(license_key, uploaded_file.name, uploaded_file.size, "Text-Safe")
-        with st.spinner("📄 Reading Text (Safe Mode)..."):
-            raw_text = extract_text_from_pdf(uploaded_file.getvalue())
-            if not raw_text: return None, "Could not read text."
-            
-            # TRUNCATE TO SAFE LIMIT (150k chars = ~35k tokens) - PREVENTS 429
-            safe_text = raw_text[:150000]
-            
-            response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{safe_text}")
-            if response: return json.loads(response.text), None
-            else: return None, "AI Busy. Try again in 1 min."
-            
-    except Exception as e:
-        return None, f"Error: {str(e)}"
+        # 2. Send Text to AI
+        try:
+            with st.spinner("🧠 Analyzing Contract Terms..."):
+                response = generate_with_retry(model, MASTER_PROMPT, f"CONTRACT TEXT:\n{contract_text}")
+                
+                if response and response.text:
+                    return json.loads(response.text), None
+                else:
+                    return None, "AI returned empty response."
+        except Exception as e:
+            return None, str(e)
 
 # ==========================================
 # 🖥️ UI
@@ -320,7 +326,7 @@ def main():
     if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
     with st.sidebar:
-        st.title(f"⚖️ {APP_NAME}")
+        st.title("⚖️ Contract Sentinel")
         st.caption(f"Version: {APP_VERSION}")
         st.success("🟢 System Online")
         st.markdown("---")
@@ -345,14 +351,14 @@ def main():
 
         uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
 
-    st.markdown(f"## {APP_NAME}")
+    st.markdown("## Strategic Contract Assessment")
     st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
 
     if uploaded_file:
         if st.button("Run Forensic Analysis"):
             
-            data_dict, error = process_file_hybrid(uploaded_file, st.session_state.license_key)
+            data_dict, error = process_contract_surgical(uploaded_file, st.session_state.license_key)
             
             if data_dict:
                 st.session_state.analysis = data_dict
