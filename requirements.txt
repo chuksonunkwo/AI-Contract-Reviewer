@@ -1,7 +1,6 @@
 streamlit
 google-generativeai
-PyPDF2
-python-docx
 fpdf
-pandas
+PyPDF2
 requests
+pandas
