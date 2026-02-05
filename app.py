@@ -4,9 +4,8 @@ import time
 import json
 
 # ==========================================
-# 🔧 SYSTEM DIAGNOSTICS (PRE-FLIGHT CHECK)
+# 🔧 SYSTEM DIAGNOSTICS
 # ==========================================
-# We check imports BEFORE the app starts to prevent "White Screen of Death"
 try:
     import google.generativeai as genai
     from fpdf import FPDF
@@ -14,10 +13,9 @@ try:
     import requests
     from google.api_core import exceptions
     import io
-    IMPORTS_OK = True
 except ImportError as e:
-    st.error(f"❌ CRITICAL SYSTEM ERROR: Missing Library. {e}")
-    st.info("Please update your 'requirements.txt' file to include: PyPDF2, fpdf, google-generativeai")
+    st.error(f"❌ CRITICAL ERROR: Missing Library. {e}")
+    st.info("Update 'requirements.txt' to include: PyPDF2, fpdf, google-generativeai")
     st.stop()
 
 # ==========================================
@@ -31,8 +29,10 @@ st.set_page_config(
 )
 
 APP_NAME = "AI Contract Reviewer"
-APP_VERSION = "1.0 (Stable Enterprise)"
-ACTIVE_MODEL = "gemini-2.0-flash-exp"
+APP_VERSION = "1.0 (Production Stable)"
+
+# ⚡ CORE ENGINE CHANGE: Switched to Stable 1.5 Flash
+ACTIVE_MODEL = "gemini-1.5-flash"
 
 # 1. API KEY
 try:
@@ -98,9 +98,15 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run (1.5 Flash):** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
+
+def repair_json(json_str):
+    json_str = re.sub(r"```json", "", json_str)
+    json_str = re.sub(r"```", "", json_str)
+    json_str = json_str.strip()
+    return json_str
 
 def safe_get(data, path, default="N/A"):
     try:
@@ -174,24 +180,23 @@ def create_pdf(data):
 # ==========================================
 
 def extract_safe_text(uploaded_file):
-    """
-    Reads PDF and truncates to 50k chars to prevent API overload.
-    """
     try:
         pdf_file = io.BytesIO(uploaded_file.getvalue())
         reader = PyPDF2.PdfReader(pdf_file)
         text = ""
-        # Safe Limit: First 20 pages + Last 10 pages
+        # Read first 25 pages + Last 15 pages (Surgical Extraction)
         total_pages = len(reader.pages)
-        pages_to_read = list(range(min(20, total_pages))) 
-        if total_pages > 20:
-            pages_to_read += list(range(max(20, total_pages - 10), total_pages))
+        pages_to_read = list(range(min(25, total_pages))) 
+        if total_pages > 25:
+            pages_to_read += list(range(max(25, total_pages - 15), total_pages))
             
         for p in pages_to_read:
-            chunk = reader.pages[p].extract_text()
-            if chunk: text += chunk + "\n"
+            try:
+                chunk = reader.pages[p].extract_text()
+                if chunk: text += chunk + "\n"
+            except: pass
             
-        return text[:50000] # Hard Cap
+        return text[:60000] # Safe Cap for 1.5 Flash
     except Exception as e:
         return f"ERROR_READING: {str(e)}"
 
@@ -217,17 +222,17 @@ def process_file(uploaded_file, license_key):
     model = genai.GenerativeModel(ACTIVE_MODEL)
     log_usage(license_key, uploaded_file.name, uploaded_file.size)
     
-    with st.spinner("📄 Reading Document (Safe Mode)..."):
+    with st.spinner("📄 Reading Document (Surgical Mode)..."):
         text_content = extract_safe_text(uploaded_file)
         if str(text_content).startswith("ERROR"): return None, text_content
         
     master_prompt = "ACT AS A CONTRACT AUDITOR. Output JSON: " + SCHEMA_DEF + "\n\nDOCUMENT TEXT:\n" + text_content
 
     try:
-        with st.spinner("🧠 Analyzing Risks..."):
+        with st.spinner("🧠 Analyzing with Gemini 1.5 Flash..."):
             response = generate_with_retry(model, master_prompt, "")
             if response and response.text:
-                return json.loads(response.text), None
+                return json.loads(repair_json(response.text)), None
             return None, "AI returned empty response."
     except Exception as e:
         return None, f"AI Error: {str(e)}"
@@ -310,65 +315,4 @@ def main():
         with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Governing Law</div><div class='metric-value' style='font-size: 1.0rem;'>{law[:20]}...</div></div>", unsafe_allow_html=True)
         with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.2rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
 
-        st.markdown("---")
-        
-        t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
-        
-        with t1:
-            st.subheader("Executive Synthesis")
-            st.markdown(safe_get(data, ['executive_summary']))
-            st.info(f"Rationale: {safe_get(data, ['risk_score', 'rationale'])}")
-            st.divider()
-            pdf_bytes = create_pdf(data)
-            st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
-
-        with t2:
-            st.subheader("Commercial Terms")
-            comm_data = safe_get(data, ['commercials'], {})
-            if isinstance(comm_data, dict):
-                for k, v in comm_data.items():
-                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
-            else: st.markdown(comm_data)
-
-        with t3:
-            st.subheader("Legal Risk Vectors")
-            risks = safe_get(data, ['legal_risks'], [])
-            if risks:
-                for r in risks:
-                    r_col = "risk-high" if r.get('risk_level') == 'High' else "risk-med" if r.get('risk_level') == 'Medium' else "risk-low"
-                    st.markdown(f"##### {r.get('area')} <span class='risk-tag {r_col}'>{r.get('risk_level')}</span>", unsafe_allow_html=True)
-                    st.write(r.get('finding'))
-                    st.caption(f"📝 Source: \"{r.get('source_text', 'N/A')}\"")
-                    st.divider()
-            else: st.info("No significant legal risks detected.")
-
-        with t4:
-            st.subheader("HSE & Safety Vectors")
-            hse = safe_get(data, ['hse_risks'], [])
-            if hse:
-                for h in hse:
-                    r_col = "risk-high" if h.get('risk_level') == 'High' else "risk-med" if h.get('risk_level') == 'Medium' else "risk-low"
-                    st.markdown(f"##### {h.get('area')} <span class='risk-tag {r_col}'>{h.get('risk_level')}</span>", unsafe_allow_html=True)
-                    st.write(h.get('finding'))
-                    st.caption(f"📝 Source: \"{h.get('source_text', 'N/A')}\"")
-                    st.divider()
-            else: st.info("No specific HSE flags detected.")
-
-        with t5:
-            st.subheader("Operational & Technical Specs")
-            ops_scope = safe_get(data, ['operational_scope'], {})
-            if ops_scope:
-                st.write("**Scope Summary:**", ops_scope.get('scope_summary', 'N/A'))
-                st.write("**Key Equipment:**", ops_scope.get('key_equipment', 'N/A'))
-            else: st.info("No critical operational constraints found.")
-
-        with t6:
-            st.subheader("Compliance & Regulatory")
-            comp = safe_get(data, ['compliance'], {})
-            if isinstance(comp, dict):
-                for k, v in comp.items():
-                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
-            else: st.markdown(comp)
-
-if __name__ == "__main__":
-    main()
+        st.markdown("---
