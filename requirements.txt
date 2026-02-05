@@ -1,6 +1,5 @@
 streamlit
-google-generativeai
+google-generativeai>=0.5.0
 fpdf
 PyPDF2
 requests
-pandas
