@@ -13,7 +13,7 @@ from google.api_core import exceptions
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Contract Sentinel AI", 
+    page_title="AI Contract Reviewer", 
     layout="wide", 
     page_icon="⚖️",
     initial_sidebar_state="expanded"
@@ -21,7 +21,8 @@ st.set_page_config(
 
 # ⚡ CORE ENGINE
 ACTIVE_MODEL = "gemini-2.0-flash-exp"
-APP_VERSION = "7.0.0 (Enterprise Gold)"
+APP_NAME = "AI Contract Reviewer"
+APP_VERSION = "1.0"
 
 # 1. API KEY
 try:
@@ -36,23 +37,23 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧱 THE "VERBATIM" SCHEMA
+# 🧱 THE SCHEMA (DATA STRUCTURE)
 # ==========================================
-# UPGRADE: Now asks for 'source_text' to prove the finding.
+# We define the JSON structure as a string to inject into the prompt.
+# This ensures the AI fills out these exact fields.
 SCHEMA_DEF = """
 {
   "contract_details": {
     "title": "string",
     "parties": ["string"],
-    "governing_law": "string",
-    "effective_date": "string"
+    "governing_law": "string"
   },
   "risk_score": {
     "score": 0-100,
     "level": "High/Medium/Low",
     "rationale": "string"
   },
-  "executive_summary": "Markdown bullet points of key deal mechanics.",
+  "executive_summary": "Markdown bullet points.",
   "commercials": {
     "value_description": "Extracted Rate/Value",
     "duration": "string",
@@ -64,7 +65,7 @@ SCHEMA_DEF = """
       "area": "Indemnity/Liability/Waiver", 
       "risk_level": "High/Med/Low", 
       "finding": "Summary of the risk", 
-      "source_text": "Exact quote from contract (e.g. 'Article 12.1...')" 
+      "source_text": "Exact quote from contract" 
     }
   ],
   "hse_risks": [
@@ -77,8 +78,7 @@ SCHEMA_DEF = """
   ],
   "compliance": {
     "local_content": "string",
-    "sanctions": "string",
-    "data_privacy": "string"
+    "sanctions": "string"
   },
   "operational_scope": {
     "scope_summary": "string",
@@ -106,7 +106,7 @@ def log_usage(license_key, filename, file_size):
     if not DISCORD_WEBHOOK: return
     try:
         requests.post(DISCORD_WEBHOOK, json={
-            "content": f"🚀 **Enterprise Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
+            "content": f"🚨 **Run:** `{filename}` ({round(file_size/1024/1024,1)}MB) | User: `{license_key[-4:]}`"
         })
     except: pass
 
@@ -148,7 +148,7 @@ class StrategicReport(FPDF):
     def header(self):
         self.set_font('Helvetica', 'B', 10)
         self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // STRATEGIC ASSESSMENT // v{APP_VERSION}', 0, 1, 'L')
+        self.cell(0, 10, f'CONFIDENTIAL // {APP_NAME} // v{APP_VERSION}', 0, 1, 'L')
         self.line(10, 20, 200, 20)
         self.ln(10)
     def footer(self):
@@ -197,7 +197,7 @@ def create_pdf(data):
         finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
         pdf.multi_cell(0, 6, finding)
         
-        # Add Source Text in Italics (The receipt)
+        # Source text
         source = str(item.get('source_text', '')).encode('latin-1', 'replace').decode('latin-1')
         if source and len(source) > 5:
             pdf.set_font("Helvetica", "I", 8)
@@ -213,12 +213,13 @@ def create_pdf(data):
 # 🧠 CLOUD ENGINE (FORENSIC MODE)
 # ==========================================
 
-MASTER_PROMPT = f"""
+# SAFE STRING FORMATTING (Using concatenation instead of f-string for Schema injection)
+MASTER_PROMPT = """
 ACT AS A FORENSIC CONTRACT AUDITOR.
 Review this ENTIRE contract (including Appendices).
 
 You MUST output your analysis in this STRICT JSON FORMAT:
-{SCHEMA_DEF}
+""" + SCHEMA_DEF + """
 
 CRITICAL EXTRACTION INSTRUCTIONS:
 
@@ -244,8 +245,8 @@ Do not summarize generically. Be specific.
 
 def generate_with_retry(model, prompt, file_obj):
     # AGGRESSIVE RETRY LOGIC (Prevents 429 Errors)
-    max_retries = 6 
-    base_delay = 10 # Start with 10s wait
+    max_retries = 5
+    base_delay = 30 # START WITH 30 SECONDS WAIT
 
     for attempt in range(max_retries):
         try:
@@ -257,14 +258,17 @@ def generate_with_retry(model, prompt, file_obj):
                 }
             )
         except exceptions.ResourceExhausted:
+            # Hit the rate limit (429)
             if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt) # 10s, 20s, 40s...
+                wait_time = base_delay * (2 ** attempt) # 30s, 60s, 120s...
                 st.toast(f"⏳ System Busy (Rate Limit). Auto-Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
-                raise 
+                st.error("❌ System Overload: The server is too busy right now. Please wait 2 minutes and try again.")
+                return None
         except Exception as e:
-            raise e 
+            st.error(f"❌ System Error: {str(e)}")
+            return None
 
 def process_file_cloud(uploaded_file, license_key):
     if not API_KEY or API_KEY == "MISSING_KEY": return None, "API Key Missing"
@@ -281,20 +285,24 @@ def process_file_cloud(uploaded_file, license_key):
         with st.spinner("☁️ Uploading to Secure Neural Engine..."):
             g_file = genai.upload_file(tmp_path, mime_type=uploaded_file.type)
             
+            # Wait for file processing (Standard 10s wait)
             while g_file.state.name == "PROCESSING":
                 time.sleep(2)
                 g_file = genai.get_file(g_file.name)
                 
-        with st.spinner("🧠 Forensic Analysis in Progress (Schema Enforcement Active)..."):
+        with st.spinner("🧠 Forensic Analysis in Progress (This may take 1-2 mins)..."):
             model = genai.GenerativeModel(ACTIVE_MODEL)
             response = generate_with_retry(model, MASTER_PROMPT, g_file)
             
         os.remove(tmp_path)
         
-        try:
-            return json.loads(response.text), None
-        except:
-            return None, "Failed to parse JSON response."
+        if response and response.text:
+            try:
+                return json.loads(response.text), None
+            except:
+                return None, "Failed to parse JSON response."
+        else:
+            return None, "No response generated."
         
     except Exception as e:
         return None, str(e)
@@ -322,8 +330,8 @@ def main():
     if 'license_key' not in st.session_state: st.session_state.license_key = ""
 
     with st.sidebar:
-        st.title("⚖️ Contract Sentinel")
-        st.caption(f"System: {APP_VERSION}")
+        st.title(f"⚖️ {APP_NAME}")
+        st.caption(f"Version: {APP_VERSION}")
         st.success("🟢 System Online")
         st.markdown("---")
 
@@ -347,8 +355,8 @@ def main():
 
         uploaded_file = st.file_uploader("Upload Contract", type=["pdf", "docx"])
 
-    st.markdown("## Strategic Contract Assessment")
-    st.markdown("##### ⚡ Enterprise Edition")
+    st.markdown(f"## {APP_NAME}")
+    st.markdown("##### ⚡ Oil & Gas Specialist Edition")
     st.markdown("---")
 
     if uploaded_file:
