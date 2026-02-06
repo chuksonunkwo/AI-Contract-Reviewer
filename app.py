@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # ⚡ CORE ENGINE: Gemini 1.5 Pro (Best for Reasoning/Legal Analysis)
-ACTIVE_MODEL = "gemini-1.5-pro"
+ACTIVE_MODEL = "gemini-2.5-pro"
 
 # 1. CREDENTIALS
 try:
