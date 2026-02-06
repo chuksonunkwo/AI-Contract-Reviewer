@@ -13,14 +13,13 @@ from google.api_core import exceptions
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Contract Engine", 
+    page_title="Strategic Assessment", 
     layout="wide", 
-    page_icon="⚙️",
+    page_icon="⚖️",
     initial_sidebar_state="expanded"
 )
 
-APP_VERSION = "1.0 (Production)"
-ACTIVE_MODEL = "gemini-2.5-pro"
+ACTIVE_MODEL = "gemini-1.5-pro" # 1.5 Pro is currently the most stable for large context
 
 # 1. CREDENTIALS
 try:
@@ -34,91 +33,143 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧠 INTELLIGENCE MODULES (The "Brain")
+# 🧠 INTELLIGENCE MODULES
 # ==========================================
 
-# 1. CONTRACT TYPES (The Context Switch)
 CONTRACT_TYPES = {
-    "General / Universal": "Standard commercial agreement. Focus on term, termination, and general liability.",
-    "Drilling Contract": "Oil & Gas specific. Focus on Rig Rates, Non-Productive Time (NPT), Knock-for-Knock Indemnities, and Pollution liability.",
-    "EPC / EPCI Contract": "Engineering/Construction. Focus on Milestones, Completion Guarantees, Liquidated Damages (LDs), and Variation Orders.",
-    "Master Service Agreement (MSA)": "Framework agreement. Focus on Call-Off mechanisms, Umbrella Liability, and Rate independence.",
-    "SaaS / Software License": "Digital product. Focus on Uptime SLA, Data Privacy (GDPR/NDPR), IP Rights, and Auto-renewal.",
-    "NDA / Confidentiality": "Secrecy agreement. Focus on 'Permitted Purpose', Duration of confidentiality, and Return of data.",
-    "Technical Manpower": "Labor supply. Focus on Visa/Immigration compliance, Tax handling, and Personnel replacement rights."
+    "General / Commercial": "Focus on Term, Termination, Payment, and General Liability.",
+    "Drilling / Rig Contract": "Focus on Day Rates, NPT (Non-Productive Time), Pollution Liability, and Knock-for-Knock.",
+    "EPC / Construction": "Focus on Milestones, Completion Guarantees, LDs (Liquidated Damages), and HSE.",
+    "SaaS / Technology": "Focus on Data Privacy (HSE equivalent), Uptime SLAs (Performance), and IP Rights.",
+    "Master Service Agreement (MSA)": "Focus on Call-Off mechanisms, Umbrella Liability, and Rate fixation.",
+    "Technical Manpower": "Focus on Personnel qualification, Visa/Immigration compliance, and Replacement rights."
 }
 
-# 2. JSON SCHEMA (The Output Structure)
+# 2. JSON SCHEMA (Strict Structure)
 SCHEMA_DEF = """
 {
-  "contract_meta": {
-    "title": "Full Contract Title",
-    "parties_involved": ["Party A", "Party B"],
-    "contract_type_detected": "string",
-    "risk_score_overall": "0-100",
-    "risk_level": "High/Medium/Low",
-    "bluf_verdict": "2-3 sentences. Bottom Line Up Front recommendation (Go/No-Go)."
+  "executive_summary": {
+    "contract_title": "string",
+    "counterparty": "string",
+    "procurement_verdict": "2-3 sentences. A Senior Procurement Manager's Go/No-Go recommendation.",
+    "risk_score": "0-100",
+    "risk_level": "High/Medium/Low"
   },
-  "commercial_metrics": {
-    "value_model": "e.g. Lumpsum / Unit Rate / Reimbursable",
-    "payment_terms": "e.g. Net 30 Days",
-    "contract_duration": "Start Date to End Date + Extensions",
-    "termination_fees": "Cost to exit early"
+  "commercial_terms": {
+    "pricing_model": "e.g. Lumpsum / Unit Rates",
+    "contract_value": "Estimated value or 'Call-Off'",
+    "duration_details": "Term + Renewal Options",
+    "payment_terms": "e.g. Net 45 Days"
   },
-  "risk_map": {
-    "liability_indemnity": { 
-        "level": "High/Med/Low", 
-        "summary": "Knock-for-knock, Caps, Consequential Loss status",
-        "playbook_tip": "One sentence negotiation counter-measure"
+  "risk_analysis": {
+    "legal_liability": { 
+        "summary": "Indemnities, Caps on Liability, Consequential Loss waivers.",
+        "risk_level": "High/Med/Low"
+    },
+    "hse_security": { 
+        "summary": "Health/Safety/Environment risks OR Data Security/Privacy risks (depending on context).",
+        "risk_level": "High/Med/Low"
     },
     "operational_performance": { 
-        "level": "High/Med/Low", 
-        "summary": "SLA, NPT (if drilling), KPIs, Milestones",
-        "playbook_tip": "Negotiation tip"
-    },
-    "termination_rights": { 
-        "level": "High/Med/Low", 
-        "summary": "Termination for Convenience/Cause",
-        "playbook_tip": "Negotiation tip"
-    },
-    "compliance_regulatory": { 
-        "level": "High/Med/Low", 
-        "summary": "Local Content (NOGICD), Sanctions, GDPR, Anti-Bribery",
-        "playbook_tip": "Negotiation tip"
+        "summary": "SLAs, KPIs, Liquidated Damages (LDs), Non-Productive Time (NPT), Force Majeure.",
+        "risk_level": "High/Med/Low"
     }
   },
   "technical_deep_dive": {
     "scope_summary": ["Bullet 1", "Bullet 2"],
-    "missing_clauses": ["List key clauses that are MISSING but should be there"]
-  }
+    "missing_clauses": ["List only CRITICAL concepts that are completely absent (e.g. 'No Liability Cap'). Do not list Article numbers."]
+  },
+  "strategic_recommendations": [
+    "Actionable Bullet 1 (Commercial Leverage)",
+    "Actionable Bullet 2 (Legal Protection)",
+    "Actionable Bullet 3 (Operational Safety)"
+  ]
 }
 """
 
 # ==========================================
-# 🎨 UI STYLING (Executive Dashboard)
+# 📄 PDF REPORT ENGINE
 # ==========================================
-st.markdown("""
-<style>
-    .stApp { background-color: #ffffff; font-family: 'Helvetica Neue', sans-serif; }
-    .dashboard-card {
-        background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;
-        padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); height: 100%;
-    }
-    .brand-header { color: #d97706; font-size: 0.9rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
-    .bluf-box { background-color: #f8fafc; border-left: 5px solid #2563eb; padding: 15px; margin-bottom: 20px; }
-    .metric-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 5px; }
-    .metric-value { font-size: 1.8rem; font-weight: 800; color: #111827; }
-    .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; }
-    .badge-high { background: #fef2f2; color: #ef4444; border: 1px solid #fecaca; }
-    .badge-med { background: #fffbeb; color: #f59e0b; border: 1px solid #fde68a; }
-    .badge-low { background: #ecfdf5; color: #10b981; border: 1px solid #a7f3d0; }
-</style>
-""", unsafe_allow_html=True)
+class StrategicReport(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 10)
+        self.set_text_color(100, 100, 100)
+        self.cell(0, 10, 'CONFIDENTIAL // STRATEGIC ASSESSMENT', 0, 1, 'C')
+        self.line(10, 20, 200, 20)
+        self.ln(10)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.set_text_color(150, 150, 150)
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+    def chapter_title(self, label):
+        self.set_font('Arial', 'B', 14)
+        self.set_text_color(0, 51, 102) # Navy Blue
+        self.cell(0, 10, label, 0, 1, 'L')
+        self.ln(2)
+
+    def chapter_body(self, body):
+        self.set_font('Arial', '', 11)
+        self.set_text_color(50, 50, 50)
+        self.multi_cell(0, 6, str(body))
+        self.ln(5)
+
+def generate_pdf(data):
+    pdf = StrategicReport()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # 1. Executive Summary
+    exec_sum = data.get('executive_summary', {})
+    pdf.set_font('Arial', 'B', 22)
+    pdf.cell(0, 15, "Strategic Assessment", 0, 1, 'C')
+    pdf.ln(5)
+    
+    # Verdict Box
+    pdf.set_fill_color(230, 240, 255) # Light Blue
+    pdf.rect(10, pdf.get_y(), 190, 35, 'F')
+    pdf.set_font('Arial', 'B', 12)
+    pdf.set_xy(15, pdf.get_y() + 5)
+    pdf.cell(0, 10, f"VERDICT: {exec_sum.get('risk_level', 'N/A').upper()} RISK ({exec_sum.get('risk_score', '0')}/100)", 0, 1)
+    pdf.set_font('Arial', '', 11)
+    pdf.set_x(15)
+    pdf.multi_cell(180, 6, exec_sum.get('procurement_verdict', ''))
+    pdf.ln(20)
+
+    # 2. Commercial Profile
+    comm = data.get('commercial_terms', {})
+    pdf.chapter_title("1. Commercial Profile")
+    pdf.chapter_body(f"Model: {comm.get('pricing_model')}\nValue: {comm.get('contract_value')}\nDuration: {comm.get('duration_details')}\nPayment: {comm.get('payment_terms')}")
+
+    # 3. Risk Analysis
+    risk = data.get('risk_analysis', {})
+    pdf.chapter_title("2. Risk Analysis")
+    
+    for key, val in risk.items():
+        title = key.replace('_', ' ').upper()
+        pdf.set_font('Arial', 'B', 11)
+        pdf.cell(0, 8, f"{title} ({val.get('risk_level')})", 0, 1)
+        pdf.set_font('Arial', '', 11)
+        pdf.multi_cell(0, 6, val.get('summary', ''))
+        pdf.ln(3)
+
+    # 4. Strategic Recommendations
+    pdf.chapter_title("3. Strategic Recommendations")
+    recs = data.get('strategic_recommendations', [])
+    for r in recs:
+        pdf.set_font('Arial', 'B', 14)
+        pdf.cell(10, 6, "-", 0, 0)
+        pdf.set_font('Arial', '', 11)
+        pdf.multi_cell(0, 6, r)
+        pdf.ln(2)
+
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # ==========================================
 # 🛠️ UTILITIES
 # ==========================================
-
 def check_gumroad_license(key):
     if not key: return False, "Enter Key"
     url = "https://api.gumroad.com/v2/licenses/verify"
@@ -126,8 +177,7 @@ def check_gumroad_license(key):
     try:
         response = requests.post(url, data=params)
         data = response.json()
-        if data.get("success") and not data.get("purchase", {}).get("refunded"):
-            return True, "Valid"
+        if data.get("success") and not data.get("purchase", {}).get("refunded"): return True, "Valid"
         return False, "Invalid Key"
     except: return False, "Connection Error"
 
@@ -140,7 +190,8 @@ def extract_text(file_obj):
     try:
         reader = PyPDF2.PdfReader(file_obj)
         text = ""
-        for i in range(min(len(reader.pages), 60)): # 60 Page Safety Limit
+        # Increased limit to 80 pages to reduce "Missing Clause" errors due to truncation
+        for i in range(min(len(reader.pages), 80)): 
             text += reader.pages[i].extract_text() + "\n"
         return text
     except: return None
@@ -152,24 +203,27 @@ def run_analysis(text, contract_type, user_role):
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    # Dynamic Context Injection
     context_instruction = CONTRACT_TYPES.get(contract_type, "Standard commercial analysis.")
-    role_instruction = f"You are reviewing this contract from the perspective of the {user_role}. Protect their interests."
     
     prompt = f"""
-    ACT AS A SENIOR LEGAL STRATEGIST.
-    {role_instruction}
+    ACT AS A SENIOR LEGAL STRATEGIST AND PROCUREMENT MANAGER.
+    Your goal is to provide a "Strategic Assessment" for a C-Level executive.
     
-    CONTEXT: The user has identified this as a: {contract_type}.
-    SPECIFIC INSTRUCTION: {context_instruction}
+    USER ROLE: {user_role} (Protect this side).
+    CONTRACT TYPE: {contract_type}.
+    SPECIFIC FOCUS: {context_instruction}
     
-    TASK: Perform a "Bottom Line Up Front" (BLUF) forensic analysis.
+    TASK: Analyze the text and output strict JSON.
     
-    OUTPUT SCHEMA (Strict JSON):
+    1. **Procurement Verdict**: Give a clear Go/No-Go recommendation.
+    2. **HSE & Security**: If Industrial, focus on Safety/Environment/Pollution. If Tech, focus on Data Security/Privacy.
+    3. **Missing Clauses**: Be careful. Only list a clause as MISSING if a fundamental concept (like Liability Cap, Termination, or Payment Terms) is completely absent. Do NOT look for specific Article numbers.
+    
+    OUTPUT SCHEMA:
     {SCHEMA_DEF}
     
     CONTRACT TEXT:
-    {text[:75000]}
+    {text[:100000]} 
     """
     
     try:
@@ -179,18 +233,30 @@ def run_analysis(text, contract_type, user_role):
         return {"error": str(e)}
 
 # ==========================================
-# 🖥️ APP
+# 🖥️ UI / DASHBOARD
 # ==========================================
 def main():
     
-    # --- SIDEBAR CONFIGURATION ---
+    # CSS Styling
+    st.markdown("""
+        <style>
+        .stApp { background-color: #f8fafc; font-family: 'Helvetica Neue', sans-serif; }
+        .dashboard-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .metric-label { font-size: 0.8rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
+        .metric-value { font-size: 1.6rem; font-weight: 700; color: #0f172a; margin-top: 5px; }
+        .verdict-box { background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 16px; margin-bottom: 24px; border-radius: 4px; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- SIDEBAR (Security) ---
     with st.sidebar:
-        st.markdown("### 🔐 Secure Login")
+        st.title("⚖️ Contract Sentinel")
+        
         if "authenticated" not in st.session_state: st.session_state.authenticated = False
         
         if not st.session_state.authenticated:
             key = st.text_input("License Key", type="password")
-            if st.button("Login"):
+            if st.button("Authenticate"):
                 valid, msg = check_gumroad_license(key)
                 if valid:
                     st.session_state.authenticated = True
@@ -199,133 +265,95 @@ def main():
                 else: st.error(msg)
             st.stop()
             
-        st.success(f"🟢 Connected: {ACTIVE_MODEL}")
-        
         st.markdown("---")
-        st.markdown("### ⚙️ Analysis Parameters")
-        
-        # 1. Contract Selector (The Pivot)
+        st.subheader("Analysis Context")
         c_type = st.selectbox("Contract Type", list(CONTRACT_TYPES.keys()))
-        
-        # 2. Role Toggle (The Perspective)
-        role = st.radio("My Role", ["Buyer / Client", "Seller / Contractor"], horizontal=True)
-        
+        role = st.radio("Perspective", ["Client / Buyer", "Contractor / Vendor"])
         uploaded_file = st.file_uploader("Upload Agreement (PDF)", type=["pdf"])
         
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.rerun()
 
-    # --- MAIN PAGE ---
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.markdown('<div class="brand-header">⚙️ CONTRACT ENGINE</div>', unsafe_allow_html=True)
-        st.title("Strategic Assessment v1.0")
+    # --- MAIN CONTENT ---
+    st.title("Strategic Assessment")
     
     if uploaded_file:
-        if st.button("🚀 Run Forensic Analysis"):
-            with st.spinner("⚙️ Scanning Document & Generating BLUF..."):
-                log_to_discord(f"🚀 Analyzing: {uploaded_file.name} | Type: {c_type}")
-                
+        if st.button("🚀 Run Strategic Analysis"):
+            with st.spinner("⚙️ Analyzing Commercial, Legal & Operational Risks..."):
                 text = extract_text(uploaded_file)
                 if text:
+                    log_to_discord(f"Analyzing {uploaded_file.name} as {c_type}")
                     result = run_analysis(text, c_type, role)
                     if "error" not in result:
                         st.session_state.result = result
                         st.rerun()
-                    else:
-                        st.error(f"AI Error: {result['error']}")
-                else:
-                    st.error("Could not read PDF text.")
+                    else: st.error(f"Analysis Failed: {result['error']}")
 
-    # --- DASHBOARD RENDER ---
     if "result" in st.session_state:
-        res = st.session_state.result
-        meta = res.get("contract_meta", {})
-        comm = res.get("commercial_metrics", {})
-        risk = res.get("risk_map", {})
-        tech = res.get("technical_deep_dive", {})
-
-        # 1. BLUF BANNER
+        data = st.session_state.result
+        
+        # 1. EXECUTIVE VERDICT
+        ex = data.get('executive_summary', {})
         st.markdown(f"""
-        <div class="bluf-box">
-            <h3 style="margin-top:0; color:#1e3a8a;">📢 BLUF: Executive Verdict</h3>
-            <p style="font-size:1.1rem;">{meta.get('bluf_verdict', 'No verdict generated.')}</p>
+        <div class="verdict-box">
+            <h3 style="margin-top:0; color:#1e40af;">📝 Procurement Verdict</h3>
+            <p style="font-size:1.1rem; color:#1e3a8a;">{ex.get('procurement_verdict')}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        # 2. METRIC CARDS
-        col1, col2, col3, col4 = st.columns(4)
-        score = meta.get("risk_score_overall", 0)
+        # 2. METRICS ROW
+        c1, c2, c3, c4 = st.columns(4)
+        comm = data.get('commercial_terms', {})
+        
+        score = ex.get('risk_score', 0)
         color = "#ef4444" if int(score) > 70 else "#f59e0b" if int(score) > 40 else "#10b981"
         
-        with col1:
-            st.markdown(f"""<div class="dashboard-card"><div class="metric-label">Risk Score</div>
-            <div class="metric-value" style="color:{color}">{score}/100</div>
-            <small>{meta.get('risk_level')}</small></div>""", unsafe_allow_html=True)
-            
-        with col2:
-            st.markdown(f"""<div class="dashboard-card"><div class="metric-label">Value Model</div>
-            <div class="metric-value" style="font-size:1.4rem">{comm.get('value_model', 'N/A')[:15]}..</div>
-            <small>{comm.get('payment_terms')}</small></div>""", unsafe_allow_html=True)
-            
-        with col3:
-            st.markdown(f"""<div class="dashboard-card"><div class="metric-label">Duration</div>
-            <div class="metric-value" style="font-size:1.4rem">{comm.get('contract_duration', 'N/A')[:15]}..</div>
-            <small>Term + Options</small></div>""", unsafe_allow_html=True)
-            
-        with col4:
-            st.markdown(f"""<div class="dashboard-card"><div class="metric-label">Exit Cost</div>
-            <div class="metric-value" style="font-size:1.4rem">{comm.get('termination_fees', 'N/A')[:15]}..</div>
-            <small>Termination Liability</small></div>""", unsafe_allow_html=True)
+        with c1: st.markdown(f"<div class='dashboard-card'><div class='metric-label'>Risk Score</div><div class='metric-value' style='color:{color}'>{score}/100</div></div>", unsafe_allow_html=True)
+        with c2: st.markdown(f"<div class='dashboard-card'><div class='metric-label'>Model</div><div class='metric-value' style='font-size:1.2rem'>{comm.get('pricing_model', 'N/A')}</div></div>", unsafe_allow_html=True)
+        with c3: st.markdown(f"<div class='dashboard-card'><div class='metric-label'>Term</div><div class='metric-value' style='font-size:1.2rem'>{comm.get('duration_details', 'N/A')}</div></div>", unsafe_allow_html=True)
+        with c4: st.markdown(f"<div class='dashboard-card'><div class='metric-label'>Payment</div><div class='metric-value' style='font-size:1.2rem'>{comm.get('payment_terms', 'N/A')}</div></div>", unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # 3. STRATEGIC RISK MAP (Grid Layout)
-        st.subheader("🛡️ Strategic Risk Map")
-        r1, r2 = st.columns(2)
+        # 3. DETAILED ANALYSIS TABS
+        t1, t2, t3, t4, t5 = st.tabs(["⚖️ Legal Liability", "⛑️ HSE & Security", "⚙️ Ops & Performance", "💡 Recommendations", "🔍 Missing Clauses"])
         
-        def risk_card(title, data):
-            lvl = data.get('level', 'Low')
-            badge = "badge-high" if lvl == "High" else "badge-med" if lvl == "Medium" else "badge-low"
-            return f"""
-            <div class="dashboard-card" style="margin-bottom:20px;">
-                <div style="display:flex; justify-content:space-between;">
-                    <strong>{title}</strong>
-                    <span class="badge {badge}">{lvl}</span>
-                </div>
-                <p style="margin-top:10px; font-size:0.9rem;">{data.get('summary')}</p>
-                <div style="background:#f3f4f6; padding:8px; border-radius:4px; font-size:0.8rem; color:#4b5563;">
-                    💡 <strong>Playbook:</strong> {data.get('playbook_tip')}
-                </div>
-            </div>
-            """
-
-        with r1:
-            st.markdown(risk_card("LIABILITY & INDEMNITY", risk.get('liability_indemnity', {})), unsafe_allow_html=True)
-            st.markdown(risk_card("OPERATIONAL / PERFORMANCE", risk.get('operational_performance', {})), unsafe_allow_html=True)
-        with r2:
-            st.markdown(risk_card("TERMINATION & EXIT", risk.get('termination_rights', {})), unsafe_allow_html=True)
-            st.markdown(risk_card("COMPLIANCE & REGULATORY", risk.get('compliance_regulatory', {})), unsafe_allow_html=True)
-
-        # 4. DEEP DIVE TABS
-        st.markdown("### 🔍 Technical Deep Dive")
-        t1, t2 = st.tabs(["Scope & Operations", "🚩 Missing Clauses"])
+        risk = data.get('risk_analysis', {})
+        tech = data.get('technical_deep_dive', {})
         
         with t1:
-            for item in tech.get('scope_summary', []):
-                st.markdown(f"- {item}")
+            r = risk.get('legal_liability', {})
+            st.subheader(f"Legal Liability ({r.get('risk_level')})")
+            st.write(r.get('summary'))
+            
         with t2:
+            r = risk.get('hse_security', {})
+            st.subheader(f"HSE / Data Security ({r.get('risk_level')})")
+            st.write(r.get('summary'))
+            
+        with t3:
+            r = risk.get('operational_performance', {})
+            st.subheader(f"Performance & Operations ({r.get('risk_level')})")
+            st.write(r.get('summary'))
+            
+        with t4:
+            st.subheader("Strategic Recommendations")
+            for rec in data.get('strategic_recommendations', []):
+                st.info(rec)
+
+        with t5:
             if tech.get('missing_clauses'):
                 for item in tech.get('missing_clauses', []):
-                    st.error(f"MISSING: {item}")
+                    st.warning(f"⚠️ {item}")
             else:
-                st.success("No critical standard clauses appear to be missing.")
+                st.success("No critical missing clauses detected.")
 
-        # 5. DOWNLOAD
+        # 4. PDF DOWNLOAD
         st.markdown("---")
-        json_str = json.dumps(res, indent=2)
-        st.download_button("📥 Export Analysis Data (JSON)", json_str, "contract_analysis.json", "application/json")
+        if st.button("📄 Generate PDF Report"):
+            pdf_bytes = generate_pdf(data)
+            st.download_button("📥 Download Strategic Assessment (PDF)", pdf_bytes, "Strategic_Assessment.pdf", "application/pdf")
 
 if __name__ == "__main__":
     main()
