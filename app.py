@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # ⚡ CORE ENGINE (As requested)
-ACTIVE_MODEL = "gemini-1.5-pro" 
+ACTIVE_MODEL = "gemini-2.5-pro" 
 # Note: "gemini-2.5-pro" is not a standard public endpoint yet. 
 # "1.5-pro" is the current "Senior Strategist" model. 
 # If your API key has special access to 2.5, change this string back to "gemini-2.5-pro".
