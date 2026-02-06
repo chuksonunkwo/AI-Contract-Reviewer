@@ -340,7 +340,6 @@ def main():
     with c1:
         st.markdown('<div class="brand-header">⚙️ CONTRACT ENGINE</div>', unsafe_allow_html=True)
         st.title("Strategic Assessment")
-        st.caption("Oil & Gas Edition v4.0")
     
     # Process
     if uploaded_file:
