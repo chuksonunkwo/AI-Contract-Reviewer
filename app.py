@@ -17,8 +17,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Gemini 1.5 Pro (Best for Reasoning/Legal Analysis)
-ACTIVE_MODEL = "gemini-2.5-pro"
+APP_VERSION = "1.0 (Final Release)"
+# ⚡ CORE ENGINE: Gemini 1.5 Pro (Senior Strategist Logic)
+ACTIVE_MODEL = "gemini-1.5-pro"
 
 # 1. CREDENTIALS
 try:
@@ -79,7 +80,7 @@ class StrategicReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 10)
         self.set_text_color(100, 100, 100)
-        self.cell(0, 10, 'CONFIDENTIAL // STRATEGIC CONTRACT ASSESSMENT', 0, 1, 'C')
+        self.cell(0, 10, f'CONFIDENTIAL // STRATEGIC CONTRACT ASSESSMENT v{APP_VERSION}', 0, 1, 'C')
         self.line(10, 20, 200, 20)
         self.ln(10)
 
@@ -275,6 +276,7 @@ def main():
             st.stop()
             
         st.success("🟢 System Online")
+        st.caption(f"v{APP_VERSION}")
         st.markdown("---")
         uploaded_file = st.file_uploader("Upload Agreement (PDF)", type=["pdf"])
         
@@ -286,7 +288,7 @@ def main():
     c1, c2 = st.columns([3,1])
     with c1:
         st.markdown('### ⚙️ CONTRACT INTELLIGENCE', unsafe_allow_html=True)
-        st.caption("Strategic Analysis & Procurement")
+        st.caption("Strategic Analysis & Procurement Guardrails")
     
     if uploaded_file:
         if st.button("🚀 Run Strategic Analysis"):
