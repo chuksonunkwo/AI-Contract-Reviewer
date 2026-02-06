@@ -1,38 +1,28 @@
 import streamlit as st
-import os
+import google.generativeai as genai
 import json
-import time
+import os
+import requests
 import io
-
-# ==========================================
-# 🛡️ SYSTEM CHECK & IMPORTS
-# ==========================================
-try:
-    import google.generativeai as genai
-    from fpdf import FPDF
-    import PyPDF2
-    import requests
-    from google.api_core import exceptions
-except ImportError as e:
-    st.error(f"❌ CRITICAL ERROR: Missing Library. {e}")
-    st.info("Update 'requirements.txt' on Render to include: google-generativeai>=0.8.3, fpdf, PyPDF2, streamlit")
-    st.stop()
+import time
+from fpdf import FPDF
+import PyPDF2
+from google.api_core import exceptions
 
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Contract Sentinel", 
+    page_title="Contract Engine", 
     layout="wide", 
-    page_icon="⚖️",
-    initial_sidebar_state="expanded"
+    page_icon="⚙️",
+    initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "19.0 (Production 2.5)"
-# ⚡ THE ENGINE CONFIRMED TO WORK
-ACTIVE_MODEL = "gemini-2.5-pro" 
+APP_VERSION = "1.0 (Production)"
+ACTIVE_MODEL = "gemini-2.5-pro"
 
-# 1. API KEY
+# 1. CREDENTIALS
 try:
     API_KEY = os.environ.get("GEMINI_API_KEY")
     if not API_KEY:
@@ -40,317 +30,330 @@ try:
 except:
     API_KEY = None
 
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
+# Replace this with your actual Gumroad Product ID
+GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
+
 # ==========================================
-# 🧱 THE SCHEMA
+# 🎨 UI STYLING (THE "CONTRACT ENGINE" LOOK)
 # ==========================================
+# This CSS matches the screenshots you provided (Cards, Badges, Clean Fonts)
+st.markdown("""
+<style>
+    /* Main Background */
+    .stApp { background-color: #ffffff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    
+    /* Card Container */
+    .dashboard-card {
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        height: 100%;
+    }
+    
+    /* Headings */
+    h1, h2, h3 { color: #111827; font-weight: 700; }
+    .brand-header { color: #d97706; font-size: 0.9rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 5px; }
+    .section-header { font-size: 1.5rem; color: #1f2937; margin-top: 30px; margin-bottom: 15px; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px; }
+
+    /* Metric Values */
+    .metric-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 5px; }
+    .metric-value-big { font-size: 2rem; font-weight: 800; color: #111827; }
+    .metric-subtext { font-size: 0.85rem; color: #6b7280; margin-top: 5px; }
+
+    /* Risk Badges */
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; display: inline-block; }
+    .badge-high { background-color: #fef2f2; color: #ef4444; border: 1px solid #fecaca; }
+    .badge-med { background-color: #fffbeb; color: #f59e0b; border: 1px solid #fde68a; }
+    .badge-low { background-color: #ecfdf5; color: #10b981; border: 1px solid #a7f3d0; }
+
+    /* Text */
+    .content-text { font-size: 0.95rem; color: #374151; line-height: 1.6; }
+    
+    /* Layout Helpers */
+    .risk-map-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+    .risk-item { border-left: 4px solid #d1d5db; padding-left: 15px; margin-bottom: 15px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 🛠️ UTILITIES (Gumroad, Discord, etc.)
+# ==========================================
+
+def check_gumroad_license(key):
+    """Verifies the license key with Gumroad API."""
+    # BYPASS MODE: If no key entered, block access.
+    # If you want a free trial, you can modify logic here.
+    if not key: return False, "Enter Key"
+    
+    url = "https://api.gumroad.com/v2/licenses/verify"
+    params = {"product_id": GUMROAD_PRODUCT_ID, "license_key": key, "increment_uses_count": "false"}
+    try:
+        response = requests.post(url, data=params)
+        data = response.json()
+        if data.get("success") and not data.get("purchase", {}).get("refunded"):
+            return True, "Valid"
+        return False, "Invalid Key"
+    except:
+        return False, "Connection Error"
+
+def log_to_discord(message):
+    """Sends logs to your Discord channel."""
+    if DISCORD_WEBHOOK:
+        try:
+            requests.post(DISCORD_WEBHOOK, json={"content": message})
+        except: pass
+
+def extract_text_safe(file_obj):
+    """Reads PDF text safely using PyPDF2."""
+    try:
+        pdf_reader = PyPDF2.PdfReader(file_obj)
+        text = ""
+        # Limit to first 60 pages to prevent token overflow
+        for i in range(min(len(pdf_reader.pages), 60)):
+            page = pdf_reader.pages[i]
+            if page.extract_text():
+                text += page.extract_text() + "\n"
+        return text
+    except Exception as e:
+        return f"Error reading PDF: {e}"
+
+# ==========================================
+# 🧠 AI ENGINE (Prompt Engineering)
+# ==========================================
+# This schema matches your new dashboard layout
 SCHEMA_DEF = """
 {
-  "contract_details": {
-    "title": "string",
-    "parties": ["string"],
-    "governing_law": "string",
-    "effective_date": "string"
+  "contract_meta": {
+    "title": "Full Contract Title",
+    "parties_involved": ["Party A", "Party B"],
+    "contract_type": "e.g. Master Service Agreement",
+    "risk_score_overall": "0-100",
+    "risk_level": "High/Medium/Low",
+    "risk_rationale": "1 sentence summary"
   },
-  "risk_score": {
-    "score": 0-100,
-    "level": "High/Medium/Low",
-    "rationale": "string"
+  "commercial_metrics": {
+    "value_model": "e.g. Unit Rates / Call-Off",
+    "value_details": "Short summary of value/rates",
+    "term_duration": "e.g. 3 Years + Options",
+    "term_details": "Specific dates if found"
   },
-  "executive_summary": "Markdown bullet points of key deal mechanics.",
-  "commercials": {
-    "value_description": "Extracted Rate/Value",
-    "duration": "string",
-    "termination_fee": "string",
-    "payment_terms": "string"
+  "risk_map": {
+    "liability": { "level": "High/Medium/Low", "summary": "Summary of indemnity/liability" },
+    "termination": { "level": "High/Medium/Low", "summary": "Summary of termination rights" },
+    "operational": { "level": "High/Medium/Low", "summary": "Summary of operational/NPT risks" },
+    "compliance": { "level": "High/Medium/Low", "summary": "Summary of local content/sanctions" }
   },
-  "legal_risks": [
-    { 
-      "area": "Indemnity/Liability/Waiver", 
-      "risk_level": "High/Med/Low", 
-      "finding": "Summary of the risk", 
-      "source_text": "Exact quote from contract" 
-    }
-  ],
-  "hse_risks": [
-    { 
-      "area": "Stop Work/Safety Case/Environment", 
-      "risk_level": "High/Med/Low", 
-      "finding": "Summary of the risk", 
-      "source_text": "Exact quote from contract" 
-    }
-  ],
-  "compliance": {
-    "local_content": "string",
-    "sanctions": "string",
-    "data_privacy": "string"
-  },
-  "operational_scope": {
-    "scope_summary": "string",
-    "key_equipment": "string"
+  "deep_dive": {
+    "executive_summary": ["Bullet 1", "Bullet 2", "Bullet 3"],
+    "commercial_analysis": ["Bullet 1", "Bullet 2"],
+    "technical_scope": ["Bullet 1", "Bullet 2"],
+    "recommendations": ["Rec 1", "Rec 2"]
   }
 }
 """
 
-# ==========================================
-# 🛠️ UTILITIES
-# ==========================================
-
-def repair_json(json_str):
-    json_str = json_str.replace("```json", "").replace("```", "").strip()
-    return json_str
-
-def safe_get(data, path, default="N/A"):
+def analyze_contract(text):
+    """Sends text to Gemini 2.5 Pro."""
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel(ACTIVE_MODEL)
+    
+    prompt = f"""
+    ACT AS A SENIOR CONTRACT ANALYST (Oil & Gas Specialist).
+    Analyze this contract text.
+    
+    Output strictly VALID JSON using this schema:
+    {SCHEMA_DEF}
+    
+    CONTRACT TEXT:
+    {text[:75000]}
+    """
+    
     try:
-        for key in path:
-            if isinstance(data, list): data = data[0] if data else default
-            elif isinstance(data, dict): data = data.get(key, default)
-            else: return default
-        return data
-    except: return default
-
-def format_currency(value):
-    if not isinstance(value, str): return str(value)
-    if len(value) > 35: return "See Report" 
-    return value
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        return json.loads(response.text)
+    except Exception as e:
+        return {"error": str(e)}
 
 # ==========================================
-# 📄 PDF ENGINE
-# ==========================================
-class StrategicReport(FPDF):
-    def header(self):
-        self.set_font('Helvetica', 'B', 10)
-        self.set_text_color(80, 80, 80)
-        self.cell(0, 10, f'CONFIDENTIAL // CONTRACT SENTINEL // v{APP_VERSION}', 0, 1, 'L')
-        self.line(10, 20, 200, 20)
-        self.ln(10)
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Helvetica', 'I', 8)
-        self.set_text_color(150, 150, 150)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-
-def create_pdf(data):
-    pdf = StrategicReport()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    # Title
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.set_text_color(0, 0, 0)
-    title = safe_get(data, ['contract_details', 'title'], 'Contract Analysis')
-    pdf.multi_cell(0, 8, str(title).encode('latin-1', 'replace').decode('latin-1'), 0, 'L')
-    pdf.ln(5)
-    
-    # Exec Summary
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "1. EXECUTIVE SYNTHESIS", 0, 1, 'L', fill=True)
-    pdf.ln(3)
-    pdf.set_font("Helvetica", "", 10)
-    summary = safe_get(data, ['executive_summary'], 'No summary available.')
-    pdf.multi_cell(0, 6, str(summary).encode('latin-1', 'replace').decode('latin-1'))
-    pdf.ln(5)
-
-    # Risk Table
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, "2. RISK & LIABILITY", 0, 1, 'L', fill=True)
-    pdf.ln(3)
-    
-    all_risks = safe_get(data, ['legal_risks'], []) + safe_get(data, ['hse_risks'], [])
-    
-    for item in all_risks:
-        pdf.set_font("Helvetica", "B", 10)
-        area = str(item.get('area', 'Risk')).encode('latin-1', 'replace').decode('latin-1')
-        risk_level = str(item.get('risk_level', '-')).encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(0, 6, f"{area} ({risk_level})", 0, 1)
-        
-        pdf.set_font("Helvetica", "", 10)
-        finding = str(item.get('finding', '')).encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 6, finding)
-        
-        # Source text
-        source = str(item.get('source_text', '')).encode('latin-1', 'replace').decode('latin-1')
-        if source and len(source) > 5:
-            pdf.set_font("Helvetica", "I", 8)
-            pdf.set_text_color(100, 100, 100)
-            pdf.multi_cell(0, 5, f"Source: {source}")
-            pdf.set_text_color(0, 0, 0)
-            
-        pdf.ln(3)
-
-    return pdf.output(dest='S').encode('latin-1', 'replace')
-
-# ==========================================
-# 🖥️ UI & LOGIC
+# 🖥️ MAIN APPLICATION FLOW
 # ==========================================
 def main():
     
-    # Professional Styling
-    st.markdown("""
-        <style>
-        .stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
-        .metric-card { background-color: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
-        .metric-label { color: #64748b; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
-        .metric-value { color: #0f172a; font-size: 1.5rem; font-weight: 700; margin-top: 5px; }
-        .risk-tag { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; color: white; display: inline-block;}
-        .risk-high { background-color: #ef4444; }
-        .risk-med { background-color: #f59e0b; }
-        .risk-low { background-color: #10b981; }
-        </style>
-    """, unsafe_allow_html=True)
-
+    # --- 1. SIDEBAR (Login & Upload) ---
     with st.sidebar:
-        st.title("⚖️ Contract Sentinel")
-        st.caption(f"Version: {APP_VERSION}")
+        st.markdown("### 🔐 Secure Login")
         
-        if API_KEY:
-            st.success(f"✅ AI Ready: {ACTIVE_MODEL}")
-        else:
-            st.error("❌ API Key Missing")
-            
-        st.markdown("---")
-        uploaded_file = st.file_uploader("Upload Contract (PDF)", type=["pdf", "docx"])
+        # Check Session State for Login
+        if "authenticated" not in st.session_state:
+            st.session_state.authenticated = False
 
-    st.markdown("## Strategic Contract Assessment")
-    st.markdown("##### ⚡ Oil & Gas Specialist Edition")
-    st.markdown("---")
-
-    if uploaded_file and st.button("Run Forensic Analysis"):
-        if not API_KEY:
-            st.error("CRITICAL: API Key is missing.")
-            st.stop()
-
-        genai.configure(api_key=API_KEY)
-        
-        # -- STEP A: READ PDF (Safe Mode) --
-        text = ""
-        with st.spinner("📄 Reading PDF..."):
-            try:
-                pdf_file = io.BytesIO(uploaded_file.getvalue())
-                reader = PyPDF2.PdfReader(pdf_file)
-                # Limit to first 70 pages to be safe but thorough
-                for i in range(min(len(reader.pages), 70)):
-                    page_text = reader.pages[i].extract_text()
-                    if page_text: text += page_text + "\n"
-            except Exception as e:
-                st.error(f"PDF Error: {e}")
-                st.stop()
-
-        # -- STEP B: ANALYZE --
-        with st.spinner(f"🧠 Analyzing with {ACTIVE_MODEL}..."):
-            
-            prompt = """
-            ACT AS A FORENSIC CONTRACT AUDITOR. Review this contract text.
-            You MUST output your analysis in this STRICT JSON FORMAT:
-            """ + SCHEMA_DEF + """
-            
-            CRITICAL INSTRUCTIONS:
-            1. Extract the Risk Score (0-100) and provide a strict rationale.
-            2. Find the Indemnity/Liability clauses. Quote the specific text in 'source_text' to prove your finding.
-            3. Find the Commercial terms (Values, Termination Fees).
-            
-            CONTRACT TEXT:
-            """ + text[:75000] # Safe char limit for 2.5 Pro
-
-            try:
-                model = genai.GenerativeModel(ACTIVE_MODEL)
-                response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                
-                if response.text:
-                    try:
-                        data = json.loads(response.text)
-                        st.session_state.analysis = data # Save to session
-                        st.rerun() # Refresh to show dashboard
-                    except json.JSONDecodeError:
-                        st.error("AI Output Error: Could not parse JSON.")
-                        st.write(response.text)
+        if not st.session_state.authenticated:
+            license_key = st.text_input("License Key", type="password")
+            if st.button("Login"):
+                valid, msg = check_gumroad_license(license_key)
+                if valid:
+                    st.session_state.authenticated = True
+                    st.session_state.license_key = license_key
+                    st.success("Access Granted")
+                    st.rerun()
                 else:
-                    st.error("AI returned empty response.")
+                    st.error(msg)
+            st.info("Enter your Gumroad key to access the engine.")
+            st.stop() # Stop here if not logged in
+        
+        # If Logged In:
+        st.success("🟢 System Online")
+        uploaded_file = st.file_uploader("Upload Agreement", type=["pdf"])
+        
+        if st.button("Logout"):
+            st.session_state.authenticated = False
+            st.rerun()
+
+    # --- 2. HEADER ---
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.markdown('<div class="brand-header">⚙️ CONTRACT ENGINE</div>', unsafe_allow_html=True)
+        st.markdown('<h1>Oil & Gas Edition</h1>', unsafe_allow_html=True)
+    
+    # --- 3. ANALYSIS LOGIC ---
+    if uploaded_file:
+        if "analysis_result" not in st.session_state or st.session_state.get("last_file") != uploaded_file.name:
+            if st.button("🚀 Analyze Contract"):
+                with st.spinner("⚙️ Engine Running: extracting text, analyzing clauses..."):
                     
-            except Exception as e:
-                st.error(f"Analysis Failed: {e}")
+                    # Log Start
+                    log_to_discord(f"🚀 Started analysis: {uploaded_file.name}")
+                    
+                    # 1. Read PDF
+                    text = extract_text_safe(uploaded_file)
+                    
+                    # 2. Analyze
+                    result = analyze_contract(text)
+                    
+                    if "error" in result:
+                        st.error(f"Analysis Failed: {result['error']}")
+                        log_to_discord(f"❌ Failed: {result['error']}")
+                    else:
+                        st.session_state.analysis_result = result
+                        st.session_state.last_file = uploaded_file.name
+                        log_to_discord(f"✅ Success: {uploaded_file.name} (Score: {result['contract_meta']['risk_score_overall']})")
+                        st.rerun()
+    
+    # --- 4. DASHBOARD RENDER ---
+    if "analysis_result" in st.session_state:
+        res = st.session_state.analysis_result
+        meta = res.get("contract_meta", {})
+        comm = res.get("commercial_metrics", {})
+        risk = res.get("risk_map", {})
+        deep = res.get("deep_dive", {})
 
-    # -- STEP C: DISPLAY DASHBOARD --
-    if "analysis" in st.session_state:
-        data = st.session_state.analysis
-        
-        # 1. HERO METRICS
-        c1, c2, c3, c4 = st.columns(4)
-        score = safe_get(data, ['risk_score', 'score'], 0)
-        level = safe_get(data, ['risk_score', 'level'], 'Unknown')
-        
-        comm_val = format_currency(safe_get(data, ['commercials', 'value_description'], "N/A"))
-        law = safe_get(data, ['contract_details', 'governing_law'], "N/A")
-        
-        color = "#10b981" # Green
-        if int(score) > 75: color = "#ef4444" # Red
-        elif int(score) > 40: color = "#f59e0b" # Orange
-        
-        with c1: st.markdown(f"<div class='metric-card'><div class='metric-label'>Risk Score</div><div class='metric-value' style='color: {color};'>{score}/100</div><small>{level}</small></div>", unsafe_allow_html=True)
-        with c2: st.markdown(f"<div class='metric-card'><div class='metric-label'>Value / Rate</div><div class='metric-value' style='font-size: 1.2rem;'>{comm_val}</div></div>", unsafe_allow_html=True)
-        with c3: st.markdown(f"<div class='metric-card'><div class='metric-label'>Governing Law</div><div class='metric-value' style='font-size: 1.0rem;'>{law[:20]}...</div></div>", unsafe_allow_html=True)
-        with c4: st.markdown(f"<div class='metric-card'><div class='metric-label'>Action</div><div class='metric-value' style='font-size: 1.2rem;'>{'⚠️ Review' if int(score) > 40 else '✅ Approved'}</div></div>", unsafe_allow_html=True)
-
+        # Header Title
+        st.markdown(f"## {meta.get('title', 'Contract Analysis')} ✅")
         st.markdown("---")
+
+        # ROW 1: METRIC CARDS
+        col1, col2, col3, col4 = st.columns(4)
         
-        # 2. TABS
-        t1, t2, t3, t4, t5, t6 = st.tabs(["📄 Briefing", "💰 Commercials", "⚖️ Legal", "⛑️ HSE", "⚙️ Ops", "🚩 Compliance"])
+        # Card 1: Risk Score
+        score = meta.get("risk_score_overall", "0")
+        score_color = "#ef4444" if int(score) > 70 else "#f59e0b" if int(score) > 40 else "#10b981"
         
-        with t1:
-            st.subheader("Executive Synthesis")
-            st.markdown(safe_get(data, ['executive_summary']))
-            st.info(f"Rationale: {safe_get(data, ['risk_score', 'rationale'])}")
-            st.divider()
-            pdf_bytes = create_pdf(data)
-            st.download_button("📥 Download Enterprise Report (PDF)", pdf_bytes, "Assessment.pdf", "application/pdf")
+        with col1:
+            st.markdown(f"""
+            <div class="dashboard-card">
+                <div class="metric-label">Overall Risk Rating</div>
+                <div class="metric-value-big" style="color: {score_color}">{meta.get('risk_level', 'Unknown')}</div>
+                <div class="metric-subtext">Score: {score}/100</div>
+                <div class="content-text" style="font-size: 0.8rem; margin-top: 10px;">{meta.get('risk_rationale', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        with t2:
-            st.subheader("Commercial Terms")
-            comm_data = safe_get(data, ['commercials'], {})
-            if isinstance(comm_data, dict):
-                for k, v in comm_data.items():
-                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
-            else: st.markdown(comm_data)
+        # Card 2: Value
+        with col2:
+            st.markdown(f"""
+            <div class="dashboard-card">
+                <div class="metric-label">Contract Value</div>
+                <div class="metric-value-big" style="font-size: 1.4rem;">{comm.get('value_model', 'N/A')}</div>
+                <div class="content-text" style="font-size: 0.85rem; margin-top: 10px;">{comm.get('value_details', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        with t3:
-            st.subheader("Legal Risk Vectors (Contractual)")
-            risks = safe_get(data, ['legal_risks'], [])
-            if risks:
-                for r in risks:
-                    r_col = "risk-high" if r.get('risk_level') == 'High' else "risk-med" if r.get('risk_level') == 'Medium' else "risk-low"
-                    st.markdown(f"##### {r.get('area')} <span class='risk-tag {r_col}'>{r.get('risk_level')}</span>", unsafe_allow_html=True)
-                    st.write(r.get('finding'))
-                    st.caption(f"📝 Source: \"{r.get('source_text', 'N/A')}\"")
-                    st.divider()
-            else: st.info("No significant legal risks detected.")
+        # Card 3: Term
+        with col3:
+            st.markdown(f"""
+            <div class="dashboard-card">
+                <div class="metric-label">Term & Duration</div>
+                <div class="metric-value-big" style="font-size: 1.4rem;">{comm.get('term_duration', 'N/A')}</div>
+                <div class="content-text" style="font-size: 0.85rem; margin-top: 10px;">{comm.get('term_details', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        with t4:
-            st.subheader("HSE & Safety Vectors")
-            hse = safe_get(data, ['hse_risks'], [])
-            if hse:
-                for h in hse:
-                    r_col = "risk-high" if h.get('risk_level') == 'High' else "risk-med" if h.get('risk_level') == 'Medium' else "risk-low"
-                    st.markdown(f"##### {h.get('area')} <span class='risk-tag {r_col}'>{h.get('risk_level')}</span>", unsafe_allow_html=True)
-                    st.write(h.get('finding'))
-                    st.caption(f"📝 Source: \"{h.get('source_text', 'N/A')}\"")
-                    st.divider()
-            else: st.info("No specific HSE flags detected.")
+        # Card 4: Type
+        with col4:
+            st.markdown(f"""
+            <div class="dashboard-card">
+                <div class="metric-label">Contract Type</div>
+                <div class="metric-value-big" style="font-size: 1.4rem;">{meta.get('contract_type', 'Service Agmt')}</div>
+                <div class="content-text" style="font-size: 0.85rem; margin-top: 10px;">Parties: {', '.join(meta.get('parties_involved', []))}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        with t5:
-            st.subheader("Operational & Technical Specs")
-            ops_scope = safe_get(data, ['operational_scope'], {})
-            if ops_scope:
-                st.write("**Scope Summary:**", ops_scope.get('scope_summary', 'N/A'))
-                st.write("**Key Equipment:**", ops_scope.get('key_equipment', 'N/A'))
-            else: st.info("No critical operational constraints found.")
+        # ROW 2: RISK MAP
+        st.markdown('<div class="section-header">🛡️ Strategic Risk Map</div>', unsafe_allow_html=True)
+        
+        r1, r2 = st.columns(2)
+        
+        def render_risk_card(title, data):
+            level = data.get('level', 'Low')
+            badge_class = "badge-high" if level == "High" else "badge-med" if level == "Medium" else "badge-low"
+            return f"""
+            <div class="dashboard-card" style="margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div class="metric-label" style="font-size: 0.9rem;">{title}</div>
+                    <span class="badge {badge_class}">{level} RISK</span>
+                </div>
+                <div class="content-text">{data.get('summary', 'No data')}</div>
+            </div>
+            """
 
-        with t6:
-            st.subheader("Compliance & Regulatory")
-            comp = safe_get(data, ['compliance'], {})
-            if isinstance(comp, dict):
-                for k, v in comp.items():
-                    st.markdown(f"**{k.capitalize().replace('_', ' ')}:** {v}")
-            else: st.markdown(comp)
+        with r1:
+            st.markdown(render_risk_card("LIABILITY & INDEMNITY", risk.get('liability', {})), unsafe_allow_html=True)
+            st.markdown(render_risk_card("OPERATIONAL / PERFORMANCE", risk.get('operational', {})), unsafe_allow_html=True)
+            
+        with r2:
+            st.markdown(render_risk_card("TERMINATION & SUSPENSION", risk.get('termination', {})), unsafe_allow_html=True)
+            st.markdown(render_risk_card("COMPLIANCE & REGULATORY", risk.get('compliance', {})), unsafe_allow_html=True)
+
+        # ROW 3: DETAILED TABS
+        st.markdown('<div class="section-header">📄 Comprehensive Report</div>', unsafe_allow_html=True)
+        
+        tab1, tab2, tab3 = st.tabs(["Executive Summary", "Commercial & Scope", "Strategic Recommendations"])
+        
+        with tab1:
+            st.write("#### Executive Summary")
+            for item in deep.get('executive_summary', []):
+                st.markdown(f"- {item}")
+                
+        with tab2:
+            st.write("#### Commercial & Financial Profile")
+            for item in deep.get('commercial_analysis', []):
+                st.markdown(f"- {item}")
+            st.write("#### Scope of Work")
+            for item in deep.get('technical_scope', []):
+                st.markdown(f"- {item}")
+
+        with tab3:
+            st.write("#### Strategic Recommendations")
+            for item in deep.get('recommendations', []):
+                st.info(item)
+                
+        # DOWNLOAD
+        st.markdown("---")
+        json_str = json.dumps(res, indent=2)
+        st.download_button("📥 Export Analysis (JSON)", json_str, "contract_analysis.json", "application/json")
 
 if __name__ == "__main__":
     main()
