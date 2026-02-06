@@ -286,7 +286,7 @@ def main():
     c1, c2 = st.columns([3,1])
     with c1:
         st.markdown('### ⚙️ CONTRACT INTELLIGENCE', unsafe_allow_html=True)
-        st.caption("Strategic Analysis & Procurement Guardrails (v5.1)")
+        st.caption("Strategic Analysis & Procurement")
     
     if uploaded_file:
         if st.button("🚀 Run Strategic Analysis"):
