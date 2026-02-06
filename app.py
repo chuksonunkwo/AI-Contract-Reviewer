@@ -19,7 +19,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-ACTIVE_MODEL = "gemini-1.5-pro" # 1.5 Pro is currently the most stable for large context
+# ⚡ CORE ENGINE: Reverted to 2.5 Pro as requested
+ACTIVE_MODEL = "gemini-2.5-pro"
 
 # 1. CREDENTIALS
 try:
@@ -190,8 +191,8 @@ def extract_text(file_obj):
     try:
         reader = PyPDF2.PdfReader(file_obj)
         text = ""
-        # Increased limit to 80 pages to reduce "Missing Clause" errors due to truncation
-        for i in range(min(len(reader.pages), 80)): 
+        # 2.5 Pro has a huge context window, we can read more pages safely
+        for i in range(min(len(reader.pages), 100)): 
             text += reader.pages[i].extract_text() + "\n"
         return text
     except: return None
@@ -217,14 +218,15 @@ def run_analysis(text, contract_type, user_role):
     
     1. **Procurement Verdict**: Give a clear Go/No-Go recommendation.
     2. **HSE & Security**: If Industrial, focus on Safety/Environment/Pollution. If Tech, focus on Data Security/Privacy.
-    3. **Missing Clauses**: Be careful. Only list a clause as MISSING if a fundamental concept (like Liability Cap, Termination, or Payment Terms) is completely absent. Do NOT look for specific Article numbers.
+    3. **Missing Clauses**: Be careful. Only list a clause as MISSING if a fundamental concept (like Liability Cap, Termination, or Payment Terms) is completely absent. Do NOT list specific Article numbers.
     
     OUTPUT SCHEMA:
     {SCHEMA_DEF}
     
     CONTRACT TEXT:
-    {text[:100000]} 
+    {text[:150000]} 
     """
+    # Note: Increased text limit to 150k chars for 2.5 Pro
     
     try:
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
@@ -280,7 +282,7 @@ def main():
     
     if uploaded_file:
         if st.button("🚀 Run Strategic Analysis"):
-            with st.spinner("⚙️ Analyzing Commercial, Legal & Operational Risks..."):
+            with st.spinner(f"⚙️ Analyzing with {ACTIVE_MODEL}..."):
                 text = extract_text(uploaded_file)
                 if text:
                     log_to_discord(f"Analyzing {uploaded_file.name} as {c_type}")
