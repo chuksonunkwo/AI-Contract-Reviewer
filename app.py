@@ -1,38 +1,36 @@
 import streamlit as st
 import os
-import traceback
 import json
 import time
+import io
 
 # ==========================================
-# 🛡️ CRASH PROTECTION & IMPORTS
+# 🛡️ SYSTEM CHECK & IMPORTS
 # ==========================================
 try:
     import google.generativeai as genai
     from fpdf import FPDF
     import PyPDF2
-    import io
     import requests
     from google.api_core import exceptions
 except ImportError as e:
-    st.error(f"❌ CRITICAL: Library Missing. {e}")
-    st.info("Please update requirements.txt on Render to include: streamlit, google-generativeai, fpdf, PyPDF2, requests")
+    st.error(f"❌ CRITICAL ERROR: Missing Library. {e}")
+    st.info("Update 'requirements.txt' on Render to include: google-generativeai>=0.8.3, fpdf, PyPDF2, streamlit")
     st.stop()
 
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Contract AI", 
+    page_title="Contract Sentinel", 
     layout="wide", 
     page_icon="⚖️",
     initial_sidebar_state="expanded"
 )
 
-APP_VERSION = "19.0 (Production 2.5 Pro)"
-# ⚡ THE MODEL THAT WORKED
-ACTIVE_MODEL = "gemini-2.0-flash" 
-# NOTE: If 2.5-pro fails in future, switch this string to "models/gemini-1.5-pro"
+APP_VERSION = "19.0 (Production 2.5)"
+# ⚡ THE ENGINE CONFIRMED TO WORK
+ACTIVE_MODEL = "gemini-2.5-pro" 
 
 # 1. API KEY
 try:
@@ -41,10 +39,6 @@ try:
         API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
     API_KEY = None
-
-# 2. WEBHOOK & LICENSING (Optional)
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
-GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
 # 🧱 THE SCHEMA
@@ -191,7 +185,7 @@ def create_pdf(data):
 # ==========================================
 def main():
     
-    # CSS for Professional Look
+    # Professional Styling
     st.markdown("""
         <style>
         .stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
@@ -210,7 +204,7 @@ def main():
         st.caption(f"Version: {APP_VERSION}")
         
         if API_KEY:
-            st.success(f"✅ AI Active: {ACTIVE_MODEL}")
+            st.success(f"✅ AI Ready: {ACTIVE_MODEL}")
         else:
             st.error("❌ API Key Missing")
             
@@ -234,8 +228,8 @@ def main():
             try:
                 pdf_file = io.BytesIO(uploaded_file.getvalue())
                 reader = PyPDF2.PdfReader(pdf_file)
-                # Limit to first 40 pages to prevent token overflow/timeout
-                for i in range(min(len(reader.pages), 40)):
+                # Limit to first 70 pages to be safe but thorough
+                for i in range(min(len(reader.pages), 70)):
                     page_text = reader.pages[i].extract_text()
                     if page_text: text += page_text + "\n"
             except Exception as e:
@@ -251,12 +245,12 @@ def main():
             """ + SCHEMA_DEF + """
             
             CRITICAL INSTRUCTIONS:
-            1. Extract the Risk Score (0-100).
-            2. Find the Indemnity/Liability clauses. Quote the specific text in 'source_text'.
+            1. Extract the Risk Score (0-100) and provide a strict rationale.
+            2. Find the Indemnity/Liability clauses. Quote the specific text in 'source_text' to prove your finding.
             3. Find the Commercial terms (Values, Termination Fees).
             
             CONTRACT TEXT:
-            """ + text[:50000] # Safe char limit
+            """ + text[:75000] # Safe char limit for 2.5 Pro
 
             try:
                 model = genai.GenerativeModel(ACTIVE_MODEL)
