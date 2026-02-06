@@ -13,17 +13,14 @@ from google.api_core import exceptions
 # ⚙️ CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Contract Engine", 
+    page_title="Contract Intelligence", 
     layout="wide", 
-    page_icon="⚙️",
+    page_icon="⚖️",
     initial_sidebar_state="collapsed"
 )
 
-# ⚡ CORE ENGINE (As requested)
-ACTIVE_MODEL = "gemini-2.5-pro" 
-# Note: "gemini-2.5-pro" is not a standard public endpoint yet. 
-# "1.5-pro" is the current "Senior Strategist" model. 
-# If your API key has special access to 2.5, change this string back to "gemini-2.5-pro".
+# ⚡ CORE ENGINE: Gemini 1.5 Pro (The Senior Strategist)
+ACTIVE_MODEL = "gemini-1.5-pro"
 
 # 1. CREDENTIALS
 try:
@@ -37,137 +34,54 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧠 INTELLIGENCE MODULES
+# 🧠 INTELLIGENCE SCHEMA (The New Architecture)
 # ==========================================
 
-CONTRACT_TYPES = {
-    "General / Universal": "Standard commercial agreement. Focus on Term, Termination, Payment, and General Liability.",
-    "Drilling / Rig Contract": "Oil & Gas specific. Focus on Day Rates, NPT (Non-Productive Time), Pollution Liability, and Knock-for-Knock.",
-    "EPC / Construction": "Focus on Milestones, Completion Guarantees, LDs (Liquidated Damages), and HSE.",
-    "SaaS / Technology": "Focus on Data Privacy (HSE equivalent), Uptime SLAs (Performance), and IP Rights.",
-    "Master Service Agreement (MSA)": "Focus on Call-Off mechanisms, Umbrella Liability, and Rate fixation.",
-    "Technical Manpower": "Focus on Personnel qualification, Visa/Immigration compliance, and Replacement rights."
-}
-
-# 2. JSON SCHEMA (Restored for the High-Fidelity Dashboard)
+# Defines the specific output structure for the Dashboard
 SCHEMA_DEF = """
 {
-  "contract_meta": {
-    "title": "Full Contract Title",
-    "parties_involved": ["Party A", "Party B"],
-    "contract_type_detected": "string",
-    "risk_score_overall": "0-100",
-    "risk_level": "High/Medium/Low",
-    "risk_rationale": "1 sentence on why this score was given."
+  "contractDetails": {
+    "title": "Official Title of Agreement",
+    "parties": ["Party A", "Party B"]
   },
-  "commercial_metrics": {
-    "value_model": "e.g. Unit Rates / Call-Off / Lumpsum",
-    "value_details": "Estimated value or rate structure summary",
-    "contract_duration": "Start Date to End Date + Extensions",
-    "payment_terms": "e.g. Net 30 Days"
+  "overallRisk": {
+    "score": 0-100,
+    "level": "High/Medium/Low",
+    "rationale": "One sentence synthesis of the primary risk driver."
   },
-  "executive_summary": {
-    "strategic_verdict": "2-3 sentences. A Senior Procurement Manager's Go/No-Go recommendation.",
-    "key_observations": ["Bullet 1", "Bullet 2", "Bullet 3"]
+  "keyCommercials": {
+    "value": "Total Contract Value or Rate Structure",
+    "duration": "Effective Date to End Date + Extensions",
+    "contractType": "e.g. Drilling, EPC, MSA, SaaS"
   },
-  "risk_map": {
-    "liability_indemnity": { 
-        "level": "High/Med/Low", 
-        "summary": "Knock-for-knock, Caps, Deductibles, Consequential Loss."
-    },
-    "termination_rights": { 
-        "level": "High/Med/Low", 
-        "summary": "Convenience, Cause, Notice periods."
-    },
-    "operational_performance": { 
-        "level": "High/Med/Low", 
-        "summary": "NPT, SLAs, Liquidated Damages, Golden Rules."
-    },
-    "compliance_regulatory": { 
-        "level": "High/Med/Low", 
-        "summary": "Local Content (NOGICD), Sanctions, Anti-Bribery, GDPR."
-    }
+  "executiveSummary": [
+    "- **Headline**: Brief synthesis of point 1.",
+    "- **Headline**: Brief synthesis of point 2.",
+    "- **Headline**: Brief synthesis of point 3."
+  ],
+  "riskMatrix": {
+    "Liability & Indemnity": { "level": "High/Med/Low", "summary": "Caps, Knock-for-knock, Carve-outs." },
+    "HSE & Operational": { "level": "High/Med/Low", "summary": "Safety criticals, Stop Work, Pollution." },
+    "Termination & Exit": { "level": "High/Med/Low", "summary": "Convenience rights, fees, notice periods." },
+    "Compliance & Governance": { "level": "High/Med/Low", "summary": "Sanctions check (Google), Local Content, ABC." }
   },
-  "technical_deep_dive": {
-    "scope_summary": ["Bullet 1", "Bullet 2"],
-    "missing_clauses": ["List CRITICAL concepts missing (e.g. 'No Liability Cap'). Do not list Article numbers."]
+  "scope": {
+    "pricingModel": "Lumpsum / Unit Rate / Reimbursable",
+    "paymentTerms": "e.g. Net 45 Days",
+    "deliverables": "Key goods or services to be provided."
   },
-  "strategic_recommendations": [
-    "Actionable Bullet 1", "Actionable Bullet 2", "Actionable Bullet 3"
-  ]
+  "detailedAnalysis": "Markdown string containing the full deep-dive report (Commercials, Scope, Legal, HSE, Recommendations) formatted with ## Headings and bullets."
 }
 """
 
 # ==========================================
-# 🎨 HIGH-FIDELITY UI (The "Contract Engine" Look)
-# ==========================================
-st.markdown("""
-<style>
-    /* Main Background & Fonts */
-    .stApp { background-color: #ffffff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-    
-    /* Card Container */
-    .metric-card {
-        background-color: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 20px;
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-    
-    /* Typography */
-    .brand-header { color: #d97706; font-size: 0.9rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
-    .card-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
-    .card-value { font-size: 1.25rem; font-weight: 700; color: #111827; line-height: 1.2; }
-    .card-sub { font-size: 0.85rem; color: #4b5563; margin-top: 5px; }
-    
-    /* Risk Badges */
-    .risk-tag { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; display: inline-block; }
-    .tag-high { background-color: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-    .tag-med { background-color: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
-    .tag-low { background-color: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
-
-    /* Risk Map Grid */
-    .risk-box {
-        border-left: 4px solid #ddd;
-        padding-left: 15px;
-        margin-bottom: 20px;
-    }
-    .risk-box h4 { margin: 0 0 5px 0; font-size: 1rem; color: #1f2937; }
-    .risk-box p { margin: 0; font-size: 0.9rem; color: #4b5563; }
-
-    /* Alerts */
-    .missing-alert {
-        background-color: #fef2f2;
-        border-left: 4px solid #ef4444;
-        padding: 10px 15px;
-        margin-bottom: 10px;
-        color: #b91c1c;
-        font-size: 0.9rem;
-    }
-    .safe-alert {
-        background-color: #ecfdf5;
-        border-left: 4px solid #10b981;
-        padding: 10px 15px;
-        margin-bottom: 10px;
-        color: #047857;
-        font-size: 0.9rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 📄 PDF REPORT ENGINE
+# 📄 PDF REPORT ENGINE (Updated for Markdown)
 # ==========================================
 class StrategicReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 10)
         self.set_text_color(100, 100, 100)
-        self.cell(0, 10, 'CONFIDENTIAL // STRATEGIC ASSESSMENT', 0, 1, 'C')
+        self.cell(0, 10, 'CONFIDENTIAL // STRATEGIC CONTRACT ASSESSMENT', 0, 1, 'C')
         self.line(10, 20, 200, 20)
         self.ln(10)
 
@@ -179,61 +93,67 @@ class StrategicReport(FPDF):
 
     def chapter_title(self, label):
         self.set_font('Arial', 'B', 14)
-        self.set_text_color(0, 51, 102)
+        self.set_text_color(0, 51, 102) # Navy Blue
         self.cell(0, 10, label, 0, 1, 'L')
         self.ln(2)
 
     def chapter_body(self, body):
         self.set_font('Arial', '', 11)
         self.set_text_color(50, 50, 50)
-        self.multi_cell(0, 6, str(body))
-        self.ln(5)
+        # Basic markdown cleaning
+        lines = body.split('\n')
+        for line in lines:
+            if line.startswith('## '):
+                self.ln(4)
+                self.set_font('Arial', 'B', 12)
+                self.set_text_color(0, 0, 0)
+                self.cell(0, 8, line.replace('## ', ''), 0, 1)
+            elif line.startswith('- ') or line.startswith('* '):
+                self.set_font('Arial', '', 11)
+                self.set_text_color(50, 50, 50)
+                self.set_x(15) # Indent bullets
+                self.multi_cell(0, 6, chr(149) + " " + line[2:]) # Bullet char
+            else:
+                self.set_font('Arial', '', 11)
+                self.set_text_color(50, 50, 50)
+                self.multi_cell(0, 6, line)
+        self.ln(2)
 
 def generate_pdf(data):
     pdf = StrategicReport()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # Title
-    pdf.set_font('Arial', 'B', 22)
-    meta = data.get('contract_meta', {})
-    pdf.multi_cell(0, 10, str(meta.get('title', 'Contract Assessment')))
+    # 1. Title Page Info
+    details = data.get('contractDetails', {})
+    risk = data.get('overallRisk', {})
+    
+    pdf.set_font('Arial', 'B', 24)
+    pdf.multi_cell(0, 10, "Strategic Contract Assessment", 0, 'C')
     pdf.ln(5)
     
-    # Verdict
-    exec_sum = data.get('executive_summary', {})
+    pdf.set_font('Arial', 'B', 14)
+    pdf.multi_cell(0, 8, str(details.get('title', 'Contract Analysis')), 0, 'C')
+    pdf.ln(10)
+
+    # 2. Executive Synthesis Box
     pdf.set_fill_color(240, 240, 240)
-    pdf.rect(10, pdf.get_y(), 190, 30, 'F')
+    pdf.rect(10, pdf.get_y(), 190, 50, 'F')
+    pdf.set_xy(15, pdf.get_y() + 5)
+    
     pdf.set_font('Arial', 'B', 12)
-    pdf.set_xy(15, pdf.get_y()+5)
-    pdf.cell(0, 10, f"VERDICT: {meta.get('risk_level', 'N/A').upper()} ({meta.get('risk_score_overall', 0)}/100)", 0, 1)
+    pdf.cell(0, 10, f"VERDICT: {risk.get('level', 'N/A').upper()} RISK ({risk.get('score', 0)}/100)", 0, 1)
+    
     pdf.set_font('Arial', '', 11)
-    pdf.set_x(15)
-    pdf.multi_cell(180, 6, exec_sum.get('strategic_verdict', ''))
-    pdf.ln(15)
+    exec_sum = data.get('executiveSummary', [])
+    for item in exec_sum:
+        pdf.set_x(15)
+        pdf.multi_cell(180, 6, item)
+    pdf.ln(10)
 
-    # Risks
-    pdf.chapter_title("Strategic Risk Analysis")
-    risk_map = data.get('risk_map', {})
-    for k, v in risk_map.items():
-        title = k.replace('_', ' ').upper()
-        pdf.set_font('Arial', 'B', 11)
-        pdf.cell(0, 8, f"{title} [{v.get('level')}]", 0, 1)
-        pdf.set_font('Arial', '', 11)
-        pdf.multi_cell(0, 6, v.get('summary'))
-        pdf.ln(3)
-
-    # Missing
-    pdf.chapter_title("Missing Clauses & Gaps")
-    tech = data.get('technical_deep_dive', {})
-    if tech.get('missing_clauses'):
-        for m in tech.get('missing_clauses'):
-            pdf.set_text_color(200, 0, 0)
-            pdf.cell(10, 6, "(!)", 0, 0)
-            pdf.set_text_color(0, 0, 0)
-            pdf.multi_cell(0, 6, m)
-    else:
-        pdf.multi_cell(0, 6, "No critical missing clauses detected.")
+    # 3. Detailed Analysis (The McKinsey Report)
+    report_body = data.get('detailedAnalysis', "No detailed analysis generated.")
+    pdf.chapter_body(report_body)
 
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
@@ -260,44 +180,82 @@ def extract_text(file_obj):
     try:
         reader = PyPDF2.PdfReader(file_obj)
         text = ""
-        # Limit pages to prevent timeouts
-        for i in range(min(len(reader.pages), 100)): 
+        # 1.5 Pro has large context, reading up to 120 pages safely
+        for i in range(min(len(reader.pages), 120)): 
             text += reader.pages[i].extract_text() + "\n"
         return text
     except: return None
 
 # ==========================================
-# 🧠 ANALYSIS ENGINE
+# 🧠 ANALYSIS ENGINE (The "Senior Strategist")
 # ==========================================
-def run_analysis(text, contract_type, user_role):
+def run_analysis(text):
     genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel(ACTIVE_MODEL)
     
-    context_instruction = CONTRACT_TYPES.get(contract_type, "Standard commercial analysis.")
+    # Enable Google Search Tool for Background Checks
+    tools = [
+        {"google_search_retrieval": {
+            "dynamic_retrieval_config": {
+                "mode": "dynamic",
+                "dynamic_threshold": 0.3,
+            }
+        }}
+    ]
     
-    prompt = f"""
-    ACT AS A SENIOR LEGAL STRATEGIST AND PROCUREMENT MANAGER.
-    Your goal is to provide a "Strategic Assessment" for a C-Level executive (High level, Visual, Impactful).
+    # Configure Model with Tools
+    model = genai.GenerativeModel(ACTIVE_MODEL, tools=tools)
     
-    USER ROLE: {user_role} (Protect this side).
-    CONTRACT TYPE: {contract_type}.
-    SPECIFIC FOCUS: {context_instruction}
+    # The McKinsey-Style Prompt
+    base_instruction = """
+    YOU ARE A SENIOR LEGAL STRATEGIST AND PROCUREMENT MANAGER.
     
-    TASK: Analyze the text and output strict JSON.
-    
-    1. **Strategic Verdict**: Professional recommendation (Go/No-Go/Negotiate).
-    2. **Risk Scoring**: Be realistic. 
-    3. **Missing Clauses**: Only flag major omissions (e.g. "No Force Majeure", "No Liability Cap"). 
+    Your task is to analyze the provided contract and extract structured data for a management dashboard, as well as a detailed written report.
+
+    **STYLE GUIDE (McKinsey Style):**
+    - **Synthesis over Summary**: Do not just repeat clauses; explain "So What?" and the business impact.
+    - **Active Voice**: Use direct, punchy sentences.
+    - **Strict Bullet Points**: All lists must be formatted as clean, separate bullet points.
+    - **Data-Driven**: Where possible, extract numbers, caps, and dates explicitly.
+
+    **CRITICAL INSTRUCTION**: You MUST perform a background check on the Counterparty. 
+    Look for:
+    1. Recent financial news (bankruptcy, stock drops, liquidity issues).
+    2. Sanctions lists (OFAC, EU, UN) or trade restrictions.
+    3. Adverse media (lawsuits, corruption allegations, major operational failures).
+    Fill the 'Compliance & Governance' section of the riskMatrix based on these search results.
+
+    You must return a JSON object matching the provided schema.
+
+    1. **Structured Data Fields**:
+       - **contractDetails**: Identify the official title and parties.
+       - **overallRisk**: Assess as 'High', 'Medium', or 'Low' based on liability and commercial risk.
+       - **keyCommercials**: Extract value, duration, and contract type.
+       - **executiveSummary**: Provide 3-5 concise, high-impact bullet points using Markdown format (hyphen start). Focus on "Bottom Line Up Front" (BLUF).
+       - **riskMatrix**: Specific array of risk items (Liability, HSE, Termination, Compliance).
+       - **scope**: Extract pricing model, payment terms, deliverables.
+
+    2. **detailedAnalysis Field**:
+       - This field should contain the detailed "Deep Dive" analysis in Markdown format.
+       - Use **McKinsey-style headings** (## Heading Name).
+       - Structure:
+         - ## Commercial & Financial Profile
+         - ## Scope of Work & Technical Review
+         - ## Liquidated Damages and Service Credits
+         - ## Liability, Indemnities, Insurance
+         - ## HSE, Operational and Performance Risk
+         - ## Term, Termination, Breach and Force Majeure
+         - ## Legal, Compliance and Governance (Include Background Check Findings Here)
+         - ## Strategic Recommendations
+       - Ensure every bullet point is separated by a newline.
     
     OUTPUT SCHEMA:
-    {SCHEMA_DEF}
+    """ + SCHEMA_DEF + """
     
     CONTRACT TEXT:
-    {text[:150000]} 
-    """
+    """ + text[:150000]
     
     try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        response = model.generate_content(base_instruction, generation_config={"response_mime_type": "application/json"})
         return json.loads(response.text)
     except Exception as e:
         return {"error": str(e)}
@@ -307,7 +265,25 @@ def run_analysis(text, contract_type, user_role):
 # ==========================================
 def main():
     
-    # --- SIDEBAR (Security) ---
+    # --- UI STYLING ---
+    st.markdown("""
+        <style>
+        .stApp { background-color: #ffffff; font-family: 'Helvetica Neue', sans-serif; }
+        .metric-card {
+            background-color: white; border: 1px solid #e5e7eb; border-radius: 8px;
+            padding: 20px; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05);
+            height: 100%; display: flex; flex-direction: column;
+        }
+        .card-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; font-weight: 700; margin-bottom: 5px; }
+        .card-value { font-size: 1.25rem; font-weight: 700; color: #111827; }
+        .risk-badge { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; display: inline-block; }
+        .bg-high { background-color: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+        .bg-med { background-color: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+        .bg-low { background-color: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- SIDEBAR ---
     with st.sidebar:
         st.markdown("### 🔐 Secure Login")
         if "authenticated" not in st.session_state: st.session_state.authenticated = False
@@ -325,9 +301,6 @@ def main():
             
         st.success("🟢 System Online")
         st.markdown("---")
-        st.subheader("Analysis Parameters")
-        c_type = st.selectbox("Contract Type", list(CONTRACT_TYPES.keys()))
-        role = st.radio("Perspective", ["Client / Buyer", "Contractor / Vendor"])
         uploaded_file = st.file_uploader("Upload Agreement (PDF)", type=["pdf"])
         
         if st.button("Logout"):
@@ -335,142 +308,100 @@ def main():
             st.rerun()
 
     # --- MAIN CONTENT ---
-    # Header
     c1, c2 = st.columns([3,1])
     with c1:
-        st.markdown('<div class="brand-header">⚙️ CONTRACT ENGINE</div>', unsafe_allow_html=True)
-        st.title("Strategic Assessment")
+        st.markdown('### ⚙️ CONTRACT INTELLIGENCE', unsafe_allow_html=True)
+        st.caption("Strategic Analysis & Procurement Guardrails (v5.0)")
     
-    # Process
     if uploaded_file:
-        if st.button("🚀 Run Forensic Analysis"):
-            with st.spinner("⚙️ Scanning Document & Generating Strategy..."):
+        if st.button("🚀 Run Strategic Analysis"):
+            with st.spinner("⚙️ Reading Contract, Checking Sanctions, Generating Strategy..."):
                 text = extract_text(uploaded_file)
                 if text:
-                    result = run_analysis(text, c_type, role)
+                    result = run_analysis(text)
                     if "error" not in result:
                         st.session_state.result = result
                         st.rerun()
                     else: st.error(f"Analysis Failed: {result['error']}")
 
-    # Dashboard
+    # --- DASHBOARD RENDER ---
     if "result" in st.session_state:
         data = st.session_state.result
-        meta = data.get('contract_meta', {})
-        comm = data.get('commercial_metrics', {})
-        risk = data.get('risk_map', {})
-        exec_sum = data.get('executive_summary', {})
-        tech = data.get('technical_deep_dive', {})
-
-        # 1. HERO ROW (Title & Score)
-        st.markdown(f"### {meta.get('title', 'Contract Analysis')} ✅")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # 1. METADATA & RISK SCORE
+        details = data.get('contractDetails', {})
+        risk = data.get('overallRisk', {})
+        comm = data.get('keyCommercials', {})
         
-        # Color Logic
-        score = meta.get("risk_score_overall", 0)
-        level = meta.get("risk_level", "Medium")
-        if int(score) > 75: r_color, r_bg = "#b91c1c", "#fef2f2" # High (Red)
-        elif int(score) > 40: r_color, r_bg = "#b45309", "#fffbeb" # Med (Orange)
-        else: r_color, r_bg = "#047857", "#ecfdf5" # Low (Green)
-
-        with col1:
+        st.markdown(f"## {details.get('title', 'Contract Assessment')} ✅")
+        st.caption(f"Parties: {', '.join(details.get('parties', []))}")
+        
+        # Metric Row
+        c1, c2, c3, c4 = st.columns(4)
+        
+        # Risk Logic
+        lvl = risk.get('level', 'Medium')
+        bg_cls = "bg-high" if lvl == 'High' else "bg-med" if lvl == 'Medium' else "bg-low"
+        
+        with c1:
             st.markdown(f"""
-            <div class="metric-card" style="border-top: 4px solid {r_color};">
-                <div>
-                    <div class="card-label">Overall Risk</div>
-                    <div class="card-value" style="color: {r_color};">{level}</div>
-                    <div class="card-sub">{score}/100</div>
-                </div>
+            <div class="metric-card">
+                <div class="card-label">Overall Risk</div>
+                <div><span class="risk-badge {bg_cls}">{lvl}</span> <span style="font-size:1.2rem; font-weight:700;">{risk.get('score')}/100</span></div>
+                <div style="font-size:0.8rem; color:#666; margin-top:5px;">{risk.get('rationale')}</div>
             </div>
             """, unsafe_allow_html=True)
             
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div><div class="card-label">Value Model</div>
-                <div class="card-value" style="font-size: 1.1rem;">{comm.get('value_model')}</div>
-                <div class="card-sub">{comm.get('payment_terms')}</div></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col3:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div><div class="card-label">Term</div>
-                <div class="card-value" style="font-size: 1.1rem;">{comm.get('contract_duration')}</div>
-                <div class="card-sub">Duration</div></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col4:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div><div class="card-label">Type</div>
-                <div class="card-value" style="font-size: 1.1rem;">{meta.get('contract_type_detected', 'Service')}</div>
-                <div class="card-sub">Classification</div></div>
-            </div>
-            """, unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="metric-card"><div class="card-label">Contract Value</div><div class="card-value">{comm.get("value")}</div></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="metric-card"><div class="card-label">Duration</div><div class="card-value" style="font-size:1rem;">{comm.get("duration")}</div></div>', unsafe_allow_html=True)
+        with c4: st.markdown(f'<div class="metric-card"><div class="card-label">Type</div><div class="card-value">{comm.get("contractType")}</div></div>', unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # 2. EXECUTIVE VERDICT
-        st.subheader("📝 Procurement Verdict")
-        st.info(exec_sum.get('strategic_verdict'))
-        
-        # 3. STRATEGIC RISK MAP (Grid)
-        st.subheader("🛡️ Strategic Risk Map")
-        
-        r_c1, r_c2 = st.columns(2)
-        
-        def render_risk(title, r_data):
-            lvl = r_data.get('level', 'Low')
-            tag_class = "tag-high" if lvl == "High" else "tag-med" if lvl == "Medium" else "tag-low"
-            border_color = "#ef4444" if lvl == "High" else "#f59e0b" if lvl == "Medium" else "#10b981"
+        # 2. EXECUTIVE SUMMARY (BLUF)
+        st.subheader("📝 Executive Synthesis (BLUF)")
+        for item in data.get('executiveSummary', []):
+            st.markdown(item)
             
+        st.markdown("---")
+
+        # 3. RISK MATRIX GRID
+        st.subheader("🛡️ Risk & Compliance Matrix")
+        r_grid = data.get('riskMatrix', {})
+        
+        rc1, rc2 = st.columns(2)
+        
+        def render_risk_box(title, obj):
+            l = obj.get('level', 'Low')
+            b = "bg-high" if l == 'High' else "bg-med" if l == 'Medium' else "bg-low"
             return f"""
-            <div class="metric-card" style="margin-bottom: 20px; border-left: 4px solid {border_color};">
-                <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <span style="font-weight:700; color:#374151;">{title}</span>
-                    <span class="risk-tag {tag_class}">{lvl} RISK</span>
+            <div class="metric-card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="font-weight:700;">{title}</span>
+                    <span class="risk-badge {b}">{l}</span>
                 </div>
-                <p style="font-size:0.9rem; color:#4b5563; margin:0;">{r_data.get('summary')}</p>
+                <p style="font-size:0.9rem; margin-top:10px;">{obj.get('summary')}</p>
             </div>
             """
 
-        with r_c1:
-            st.markdown(render_risk("LIABILITY & INDEMNITY", risk.get('liability_indemnity', {})), unsafe_allow_html=True)
-            st.markdown(render_risk("OPERATIONAL / PERFORMANCE", risk.get('operational_performance', {})), unsafe_allow_html=True)
+        with rc1:
+            st.markdown(render_risk_box("Liability & Indemnity", r_grid.get('Liability & Indemnity', {})), unsafe_allow_html=True)
+            st.markdown(render_risk_box("HSE & Operational", r_grid.get('HSE & Operational', {})), unsafe_allow_html=True)
             
-        with r_c2:
-            st.markdown(render_risk("TERMINATION & EXIT", risk.get('termination_rights', {})), unsafe_allow_html=True)
-            st.markdown(render_risk("COMPLIANCE & REGULATORY", risk.get('compliance_regulatory', {})), unsafe_allow_html=True)
+        with rc2:
+            st.markdown(render_risk_box("Termination & Exit", r_grid.get('Termination & Exit', {})), unsafe_allow_html=True)
+            st.markdown(render_risk_box("Compliance & Sanctions Check", r_grid.get('Compliance & Governance', {})), unsafe_allow_html=True)
 
-        # 4. TABS (Deep Dive)
-        t1, t2, t3 = st.tabs(["💡 Strategic Recommendations", "🔍 Missing Clauses", "📋 Scope & Technical"])
-        
-        with t1:
-            for rec in data.get('strategic_recommendations', []):
-                st.markdown(f"- {rec}")
-                
-        with t2:
-            st.write("##### Critical Omissions Detection")
-            missing = tech.get('missing_clauses', [])
-            if missing:
-                for m in missing:
-                    st.markdown(f"<div class='missing-alert'>⚠️ <strong>MISSING:</strong> {m}</div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div class='safe-alert'>✅ No critical standard clauses appear to be missing.</div>", unsafe_allow_html=True)
+        # 4. DEEP DIVE REPORT
+        st.markdown("### 📋 Detailed Strategic Report")
+        with st.expander("View Full McKinsey-Style Analysis", expanded=True):
+            st.markdown(data.get('detailedAnalysis', 'Report generation failed.'))
 
-        with t3:
-            for item in tech.get('scope_summary', []):
-                st.write(f"- {item}")
-
-        # 5. PDF DOWNLOAD
+        # 5. PDF EXPORT
         st.markdown("---")
-        if st.button("📄 Generate Strategic Report"):
+        if st.button("📄 Download Strategic Report (PDF)"):
             pdf_bytes = generate_pdf(data)
-            st.download_button("📥 Download PDF", pdf_bytes, "Strategic_Assessment.pdf", "application/pdf")
+            st.download_button("📥 Click to Download", pdf_bytes, "Strategic_Report.pdf", "application/pdf")
 
 if __name__ == "__main__":
     main()
