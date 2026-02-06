@@ -4,10 +4,8 @@ import json
 import os
 import requests
 import io
-import time
 from fpdf import FPDF
 import PyPDF2
-from google.api_core import exceptions
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -16,11 +14,11 @@ st.set_page_config(
     page_title="Contract Intelligence", 
     layout="wide", 
     page_icon="⚖️",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# ⚡ CORE ENGINE: Gemini 1.5 Pro (The Senior Strategist)
-ACTIVE_MODEL = "gemini-2.5-pro"
+# ⚡ CORE ENGINE: Gemini 1.5 Pro (Best for Reasoning/Legal Analysis)
+ACTIVE_MODEL = "gemini-1.5-pro"
 
 # 1. CREDENTIALS
 try:
@@ -34,7 +32,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL")
 GUMROAD_PRODUCT_ID = "xGeemEFxpMJUbG-jUVxIHg==" 
 
 # ==========================================
-# 🧠 INTELLIGENCE SCHEMA (The New Architecture)
+# 🧠 INTELLIGENCE SCHEMA
 # ==========================================
 
 # Defines the specific output structure for the Dashboard
@@ -63,7 +61,7 @@ SCHEMA_DEF = """
     "Liability & Indemnity": { "level": "High/Med/Low", "summary": "Caps, Knock-for-knock, Carve-outs." },
     "HSE & Operational": { "level": "High/Med/Low", "summary": "Safety criticals, Stop Work, Pollution." },
     "Termination & Exit": { "level": "High/Med/Low", "summary": "Convenience rights, fees, notice periods." },
-    "Compliance & Governance": { "level": "High/Med/Low", "summary": "Sanctions check (Google), Local Content, ABC." }
+    "Compliance & Governance": { "level": "High/Med/Low", "summary": "Anti-Bribery, Sanctions Clauses, Local Content requirements found in text." }
   },
   "scope": {
     "pricingModel": "Lumpsum / Unit Rate / Reimbursable",
@@ -75,7 +73,7 @@ SCHEMA_DEF = """
 """
 
 # ==========================================
-# 📄 PDF REPORT ENGINE (Updated for Markdown)
+# 📄 PDF REPORT ENGINE
 # ==========================================
 class StrategicReport(FPDF):
     def header(self):
@@ -90,12 +88,6 @@ class StrategicReport(FPDF):
         self.set_font('Arial', 'I', 8)
         self.set_text_color(150, 150, 150)
         self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-
-    def chapter_title(self, label):
-        self.set_font('Arial', 'B', 14)
-        self.set_text_color(0, 51, 102) # Navy Blue
-        self.cell(0, 10, label, 0, 1, 'L')
-        self.ln(2)
 
     def chapter_body(self, body):
         self.set_font('Arial', '', 11)
@@ -151,7 +143,7 @@ def generate_pdf(data):
         pdf.multi_cell(180, 6, item)
     pdf.ln(10)
 
-    # 3. Detailed Analysis (The McKinsey Report)
+    # 3. Detailed Analysis
     report_body = data.get('detailedAnalysis', "No detailed analysis generated.")
     pdf.chapter_body(report_body)
 
@@ -192,18 +184,8 @@ def extract_text(file_obj):
 def run_analysis(text):
     genai.configure(api_key=API_KEY)
     
-    # Enable Google Search Tool for Background Checks
-    tools = [
-        {"google_search_retrieval": {
-            "dynamic_retrieval_config": {
-                "mode": "dynamic",
-                "dynamic_threshold": 0.3,
-            }
-        }}
-    ]
-    
-    # Configure Model with Tools
-    model = genai.GenerativeModel(ACTIVE_MODEL, tools=tools)
+    # Standard Model Configuration (No Tools/Search)
+    model = genai.GenerativeModel(ACTIVE_MODEL)
     
     # The McKinsey-Style Prompt
     base_instruction = """
@@ -217,13 +199,6 @@ def run_analysis(text):
     - **Strict Bullet Points**: All lists must be formatted as clean, separate bullet points.
     - **Data-Driven**: Where possible, extract numbers, caps, and dates explicitly.
 
-    **CRITICAL INSTRUCTION**: You MUST perform a background check on the Counterparty. 
-    Look for:
-    1. Recent financial news (bankruptcy, stock drops, liquidity issues).
-    2. Sanctions lists (OFAC, EU, UN) or trade restrictions.
-    3. Adverse media (lawsuits, corruption allegations, major operational failures).
-    Fill the 'Compliance & Governance' section of the riskMatrix based on these search results.
-
     You must return a JSON object matching the provided schema.
 
     1. **Structured Data Fields**:
@@ -231,7 +206,7 @@ def run_analysis(text):
        - **overallRisk**: Assess as 'High', 'Medium', or 'Low' based on liability and commercial risk.
        - **keyCommercials**: Extract value, duration, and contract type.
        - **executiveSummary**: Provide 3-5 concise, high-impact bullet points using Markdown format (hyphen start). Focus on "Bottom Line Up Front" (BLUF).
-       - **riskMatrix**: Specific array of risk items (Liability, HSE, Termination, Compliance).
+       - **riskMatrix**: Specific array of risk items (Liability, HSE, Termination, Compliance). For Compliance, analyze the text for Anti-Bribery, Sanctions, and Local Content clauses.
        - **scope**: Extract pricing model, payment terms, deliverables.
 
     2. **detailedAnalysis Field**:
@@ -244,7 +219,7 @@ def run_analysis(text):
          - ## Liability, Indemnities, Insurance
          - ## HSE, Operational and Performance Risk
          - ## Term, Termination, Breach and Force Majeure
-         - ## Legal, Compliance and Governance (Include Background Check Findings Here)
+         - ## Legal, Compliance and Governance
          - ## Strategic Recommendations
        - Ensure every bullet point is separated by a newline.
     
@@ -311,11 +286,11 @@ def main():
     c1, c2 = st.columns([3,1])
     with c1:
         st.markdown('### ⚙️ CONTRACT INTELLIGENCE', unsafe_allow_html=True)
-        st.caption("Strategic Analysis & Procurement Guardrails (v5.0)")
+        st.caption("Strategic Analysis & Procurement Guardrails (v5.1)")
     
     if uploaded_file:
         if st.button("🚀 Run Strategic Analysis"):
-            with st.spinner("⚙️ Reading Contract, Checking Sanctions, Generating Strategy..."):
+            with st.spinner("⚙️ Scanning Document & Generating Strategy..."):
                 text = extract_text(uploaded_file)
                 if text:
                     result = run_analysis(text)
@@ -359,7 +334,7 @@ def main():
         st.markdown("---")
 
         # 2. EXECUTIVE SUMMARY (BLUF)
-        st.subheader("📝 Executive Synthesis (BLUF)")
+        st.subheader("📝 Executive Synthesis")
         for item in data.get('executiveSummary', []):
             st.markdown(item)
             
@@ -390,7 +365,7 @@ def main():
             
         with rc2:
             st.markdown(render_risk_box("Termination & Exit", r_grid.get('Termination & Exit', {})), unsafe_allow_html=True)
-            st.markdown(render_risk_box("Compliance & Sanctions Check", r_grid.get('Compliance & Governance', {})), unsafe_allow_html=True)
+            st.markdown(render_risk_box("Compliance & Governance", r_grid.get('Compliance & Governance', {})), unsafe_allow_html=True)
 
         # 4. DEEP DIVE REPORT
         st.markdown("### 📋 Detailed Strategic Report")
